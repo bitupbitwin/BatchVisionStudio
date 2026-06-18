@@ -13,7 +13,7 @@
 在 Windows PowerShell 中进入本文件夹：
 
 ```powershell
-cd I:\developapp\video_auto_studio
+cd 项目所在目录\autovideomachine
 python app.py
 ```
 

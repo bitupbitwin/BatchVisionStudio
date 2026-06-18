@@ -24,7 +24,7 @@ def now_id() -> str:
 
 
 def safe_name(text: str, fallback: str = "untitled") -> str:
-    text = re.sub(r"[\\/:*?\"<>|\r\n\t]+", "_", text).strip(" ._")
+    text = re.sub(r"[\\/:*?\"<>|：＊？“”《》｜\r\n\t]+", "_", text).strip(" ._")
     text = re.sub(r"\s+", "_", text)
     return text[:60] or fallback
 
@@ -63,6 +63,9 @@ class PlainTextHTMLParser(HTMLParser):
 
 
 def fetch_url_text(url: str) -> str:
+    url = url.strip()
+    if not re.match(r"^[a-zA-Z][a-zA-Z0-9+.-]*://", url):
+        url = "https://" + url
     req = urllib.request.Request(
         url,
         headers={
@@ -135,9 +138,9 @@ class ProjectStorage:
             stem = f"{item.index:03d}_{safe_name(item.title)}"
             self.write_json(scripts_dir / f"{stem}.json", data)
             shot_text = "\n".join(
-                f"{i + 1}. 时长: {shot['duration']} 秒\n"
-                f"   画面提示词: {shot['visual_prompt']}\n"
-                f"   旁白: {shot['voiceover']}"
+                f"{i + 1}. 时长: {shot.get('duration', '')} 秒\n"
+                f"   画面提示词: {shot.get('visual_prompt', '')}\n"
+                f"   旁白: {shot.get('voiceover', '')}"
                 for i, shot in enumerate(item.shots)
             )
             (scripts_dir / f"{stem}.md").write_text(
@@ -214,7 +217,10 @@ class StoryEngine:
     def arrange_story(self, text: str) -> dict:
         text = compact_text(text)
         if self.model.available():
-            return self._arrange_with_model(text)
+            try:
+                return self._arrange_with_model(text)
+            except Exception:
+                pass
         return self._arrange_locally(text)
 
     def _arrange_with_model(self, text: str) -> dict:
@@ -256,16 +262,50 @@ class StoryEngine:
         )
         raw = self.model.chat("你是短视频脚本与 AI 视频提示词专家。", prompt)
         data = json.loads(self._extract_json(raw))
-        return [
-            ScriptItem(
-                index=int(item["index"]),
-                title=item["title"],
-                summary=item["summary"],
-                narration=item["narration"],
-                shots=item["shots"],
+        if isinstance(data, dict):
+            data = data.get("scripts") or data.get("data") or [data]
+        if not isinstance(data, list):
+            raise ValueError("模型返回的脚本格式不正确")
+        # 忽略模型给的 index，统一重排为连续 1..N，避免缺失/重复/0 起始导致列表崩溃
+        scripts = []
+        for item in data:
+            if not isinstance(item, dict):
+                continue
+            idx = len(scripts) + 1
+            scripts.append(
+                ScriptItem(
+                    index=idx,
+                    title=str(item.get("title") or f"第 {idx} 集"),
+                    summary=str(item.get("summary", "")),
+                    narration=str(item.get("narration", "")),
+                    shots=self._normalize_shots(item.get("shots", []), seconds_per_video),
+                )
             )
-            for item in data
-        ]
+        if not scripts:
+            raise ValueError("模型未返回任何脚本")
+        return scripts
+
+    def _normalize_shots(self, shots, seconds_per_video: int) -> list[dict]:
+        if not isinstance(shots, list) or not shots:
+            return [{"duration": seconds_per_video, "visual_prompt": "", "voiceover": ""}]
+        default_duration = max(1, seconds_per_video // len(shots))
+        normalized = []
+        for shot in shots:
+            if not isinstance(shot, dict):
+                shot = {"voiceover": str(shot)}
+            duration = shot.get("duration", default_duration)
+            try:
+                duration = int(duration)
+            except (TypeError, ValueError):
+                duration = default_duration
+            normalized.append(
+                {
+                    "duration": duration,
+                    "visual_prompt": str(shot.get("visual_prompt", "")),
+                    "voiceover": str(shot.get("voiceover", "")),
+                }
+            )
+        return normalized
 
     def _scripts_locally(self, story: dict, source_text: str, seconds_per_video: int) -> list[ScriptItem]:
         sentences = self._sentences(source_text or story["outline"])
@@ -426,15 +466,17 @@ class VideoAutoStudioApp:
         self.input_mode.set("text")
 
     def arrange_story(self):
-        self._run_async(self._arrange_story_task)
+        # 在主线程读取控件内容，避免在工作线程访问 Tkinter 控件（非线程安全）
+        raw_input = self.input_text.get("1.0", END).strip()
+        mode = self.input_mode.get()
+        self._run_async(lambda: self._arrange_story_task(raw_input, mode))
 
-    def _arrange_story_task(self):
+    def _arrange_story_task(self, raw_input: str, mode: str):
         self._set_var(self.status_story, "运行中")
         try:
-            raw_input = self.input_text.get("1.0", END).strip()
             if not raw_input:
                 raise ValueError("请先输入网址或粘贴文本")
-            if self.input_mode.get() == "url":
+            if mode == "url":
                 self.source_text = fetch_url_text(raw_input)
                 source_kind = "url"
                 source_preview = raw_input
@@ -495,7 +537,8 @@ class VideoAutoStudioApp:
         if not item:
             return
         shots = "\n".join(
-            f"{i + 1}. {shot['duration']} 秒\n画面提示词：{shot['visual_prompt']}\n旁白：{shot['voiceover']}\n"
+            f"{i + 1}. {shot.get('duration', '')} 秒\n"
+            f"画面提示词：{shot.get('visual_prompt', '')}\n旁白：{shot.get('voiceover', '')}\n"
             for i, shot in enumerate(item.shots)
         )
         self._set_text(
@@ -509,7 +552,7 @@ class VideoAutoStudioApp:
         for item in self.scripts:
             self.script_list.insert("", END, iid=str(item.index), values=(item.title, len(item.shots)))
         if self.scripts:
-            self.script_list.selection_set("1")
+            self.script_list.selection_set(str(self.scripts[0].index))
             self.show_selected_script()
 
     def _selected_script(self):
