@@ -193,10 +193,23 @@ async function arrange() {
 function renderStory(s) {
   const el = $("storyResult");
   el.className = "result-body";
+  let castHtml = "";
+  if (s.cast && s.cast.length) {
+    castHtml = "<h3>角色表</h3>" + s.cast.map((c) =>
+      `<b>${esc(c.name)}</b>：${esc(c.appearance || "")}` + (c.persona ? `（${esc(c.persona)}）` : "")
+    ).join("<br>");
+  } else {
+    castHtml = `<h3>主要人物 / 要素</h3>${esc(s.characters)}`;
+  }
+  let locHtml = "";
+  if (s.locations && s.locations.length) {
+    locHtml = "<h3>场景表</h3>" + s.locations.map((l) =>
+      `<b>${esc(l.name)}</b>：${esc(l.description || "")}`).join("<br>");
+  }
   el.innerHTML =
     `<h3>标题</h3>${esc(s.title)}` +
     `<h3>故事梗概</h3>${esc(s.outline)}` +
-    `<h3>主要人物 / 要素</h3>${esc(s.characters)}` +
+    castHtml + locHtml +
     `<h3>视频风格</h3>${esc(s.style)}`;
 }
 
@@ -250,17 +263,27 @@ function selectScript(index) {
   );
   const s = state.scripts.find((x) => x.index === index);
   if (!s) return;
-  const shots = s.shots.map((sh, i) =>
-    `<div class="shot-card"><div class="shot-h">镜 ${i + 1} · ${esc(String(sh.duration))} 秒</div>` +
-    `画面提示词：${esc(sh.visual_prompt)}<br>旁白：${esc(sh.voiceover)}</div>`
-  ).join("");
+  let body;
+  if (s.scenes && s.scenes.length) {
+    body = s.scenes.map((sc, si) => {
+      const head = `场景 ${si + 1}` + (sc.location ? `｜${esc(sc.location)}` : "");
+      const beats = (sc.beats || []).map((b) =>
+        `<div class="beat"><span class="spk">${esc(b.speaker || "旁白")}</span>` +
+        `<span class="line">${esc(b.line || "")}</span>` +
+        (b.action ? `<span class="act">（${esc(b.action)}）</span>` : "") +
+        `<div class="shotp">画面：${esc(b.shot_prompt || "")} · ${esc(String(b.duration || ""))}s</div></div>`
+      ).join("");
+      return `<div class="scene"><div class="shot-h">${head}</div>${beats}</div>`;
+    }).join("");
+  } else {
+    body = s.shots.map((sh, i) =>
+      `<div class="shot-card"><div class="shot-h">镜 ${i + 1} · ${esc(String(sh.duration))} 秒</div>` +
+      `画面提示词：${esc(sh.visual_prompt)}<br>旁白：${esc(sh.voiceover)}</div>`
+    ).join("");
+  }
   const el = $("scriptDetail");
   el.className = "result-body";
-  el.innerHTML =
-    `<h3>${esc(s.title)}</h3>` +
-    `<b>摘要：</b>${esc(s.summary)}` +
-    `<h3>旁白脚本</h3>${esc(s.narration)}` +
-    `<h3>镜头提示词</h3>${shots}`;
+  el.innerHTML = `<h3>${esc(s.title)}</h3><b>摘要：</b>${esc(s.summary)}<h3>剧本</h3>${body}`;
   if (!state.busy) $("step3").disabled = false;
 }
 
