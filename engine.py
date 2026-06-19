@@ -39,6 +39,21 @@ def compact_text(text: str) -> str:
     return text.strip()
 
 
+def chunk_text(text: str, size: int) -> list[str]:
+    """按句子边界把长文切成约 size 字一块，尽量不截断句子。"""
+    pieces = re.split(r"(?<=[。！？!?；;\n])", text)
+    chunks, cur = [], ""
+    for piece in pieces:
+        if cur and len(cur) + len(piece) > size:
+            chunks.append(cur)
+            cur = piece
+        else:
+            cur += piece
+    if cur.strip():
+        chunks.append(cur)
+    return chunks or [text]
+
+
 class PlainTextHTMLParser(HTMLParser):
     def __init__(self):
         super().__init__()
@@ -262,25 +277,70 @@ class StoryEngine:
         return self._arrange_locally(text)
 
     def _arrange_with_model(self, text: str) -> dict:
+        # 长文先用 map-reduce 通读全文压缩成全局摘要，避免只看开头被截断
+        digest = self._summarize_long(text, target_chars=10000) if len(text) > 12000 else text
         prompt = (
             "请把下面素材编排为适合短视频系列的故事。只输出 JSON，字段为 "
-            "title, outline, characters, style。outline 要保留核心情节和信息密度。\n\n"
-            f"{text[:12000]}"
+            "title, outline, characters, style。素材已是覆盖全文的摘要，outline "
+            "要贯穿开头、发展、高潮、结尾，保留核心情节和信息密度。\n\n"
+            f"{digest[:12000]}"
         )
         raw = self.model.chat("你是短视频故事编排与分镜策划专家。", prompt)
         return json.loads(self._extract_json(raw))
 
+    def _summarize_long(self, text: str, target_chars: int) -> str:
+        """递归 map-reduce：把任意长度的文本压缩到 target_chars 以内且覆盖全文。"""
+        if len(text) <= target_chars:
+            return text
+        chunks = chunk_text(text, 6000)
+        if len(chunks) == 1:
+            return text[:target_chars]
+        summaries = []
+        for i, ch in enumerate(chunks, 1):
+            out = self.model.chat(
+                "你是长篇内容情节摘要助手。",
+                f"这是全文的第 {i}/{len(chunks)} 部分，请用中文提炼这一部分的关键情节、"
+                f"人物与转折，保留信息密度，输出 300-500 字摘要：\n\n{ch}",
+            )
+            summaries.append(f"【第{i}部分】{out.strip()}")
+        combined = "\n\n".join(summaries)
+        return self._summarize_long(combined, target_chars)  # 仍过长则继续归并
+
     def _arrange_locally(self, text: str) -> dict:
         title = self._guess_title(text)
         sentences = self._sentences(text)
-        lead = " ".join(sentences[:12]) if sentences else text[:1200]
+        outline = self._coverage_digest(sentences, 3000) if sentences else text[:1200]
         keywords = self._keywords(text)
         return {
             "title": title,
-            "outline": lead[:3000],
+            "outline": outline,
             "characters": "、".join(keywords[:10]) or "待大模型进一步提取",
             "style": "节奏清晰、画面感强、适合 1 分钟短视频；先给出冲突或钩子，再推进关键事件，最后留下转折或结论。",
         }
+
+    def _coverage_digest(self, sentences: list[str], max_chars: int) -> str:
+        """从全篇均匀采样句子，确保覆盖开头/中间/结尾，控制在 max_chars 内。"""
+        joined = " ".join(sentences)
+        if len(joined) <= max_chars:
+            return joined
+        n = len(sentences)
+        last = sentences[-1]
+        # 预留结尾句的位置，保证全篇的结局一定进入摘要
+        budget = max(0, max_chars - len(last) - 1)
+        avg = max(1, len(joined) // n)
+        take = max(2, min(n, max_chars // avg))
+        idxs = sorted({int(i * (n - 1) / (take - 1)) for i in range(take)})
+        picked, acc = [], 0
+        for i in idxs:
+            if i == n - 1:
+                continue
+            s = sentences[i]
+            if acc + len(s) + 1 > budget:
+                break
+            picked.append(s)
+            acc += len(s) + 1
+        picked.append(last)
+        return " ".join(picked)[:max_chars]
 
     def generate_scripts(self, story: dict, source_text: str, seconds_per_video: int = 60,
                          target_count: int = 0) -> list[ScriptItem]:
@@ -294,11 +354,17 @@ class StoryEngine:
     def _scripts_with_model(self, story: dict, source_text: str, seconds_per_video: int,
                             target_count: int) -> list[ScriptItem]:
         total = target_count if target_count > 0 else max(1, math.ceil(len(source_text) / 1800))
+        # 长文用覆盖全篇的摘录作上下文，避免只截取开头
+        src = source_text
+        if len(src) > 16000:
+            src = self._coverage_digest(self._sentences(src), 15000)
         prompt = (
             f"请根据故事生成 {total} 个短视频脚本，每个约 {seconds_per_video} 秒。"
             "只输出 JSON 数组，每项字段为 index,title,summary,narration,shots。"
-            "shots 每项字段为 duration,visual_prompt,voiceover。\n\n"
-            f"故事:\n{json.dumps(story, ensure_ascii=False)}\n\n原文:\n{source_text[:16000]}"
+            "shots 每项字段为 duration,visual_prompt,voiceover。"
+            "title 要高度概括该集核心内容并具有吸引力（像爆款短视频标题，可制造悬念或好奇，"
+            "但不剧透关键反转），不超过 18 字。\n\n"
+            f"故事:\n{json.dumps(story, ensure_ascii=False)}\n\n原文:\n{src[:16000]}"
         )
         raw = self.model.chat("你是短视频脚本与 AI 视频提示词专家。", prompt)
         data = json.loads(self._extract_json(raw))
@@ -362,7 +428,7 @@ class StoryEngine:
         for idx, chunk in enumerate(chunks[:max_items], 1):
             summary = " ".join(chunk[:3])[:320]
             narration = self._build_narration(chunk)
-            title = f"第 {idx} 集：{self._title_from_summary(summary, story['title'])}"
+            title = self._episode_title(chunk, idx, story["title"])
             shots = self._build_shots(chunk, seconds_per_video)
             scripts.append(ScriptItem(idx, title, summary, narration, shots))
         return scripts
@@ -398,9 +464,29 @@ class StoryEngine:
         first = re.sub(r"^[#\s\d.、-]+", "", first)
         return first[:28] or "自动视频项目"
 
-    def _title_from_summary(self, summary: str, fallback: str) -> str:
-        cleaned = re.sub(r"[，。！？；：,.!?;:].*", "", summary).strip()
-        return (cleaned or fallback)[:24]
+    def _episode_title(self, chunk: list[str], idx: int, fallback: str) -> str:
+        """挑选信息量最大的句子作为核心，提炼成有概括性的本集标题。"""
+        if not chunk:
+            return f"第 {idx} 集 · {fallback[:16]}"
+        keywords = set(self._keywords(" ".join(chunk)))
+
+        def score(sentence: str) -> int:
+            return sum(1 for word in keywords if word in sentence)
+
+        # 关键词命中最多、长度适中的句子最能代表本段
+        best = max(chunk, key=lambda s: (score(s), -abs(len(s) - 24)))
+        # 在该句内挑关键词密度最高的分句，避免取到“三天后”这类时间状语
+        clauses = [c.strip() for c in re.split(r"[，。！？；：,.!?;:、]", best) if c.strip()]
+
+        def clause_key(c: str):
+            return (score(c), -abs(len(c) - 10))
+
+        phrase = max(clauses, key=clause_key) if clauses else best
+        # 去掉“第N章/回/节/集”等章节标记和开头编号，让标题更像内容概括
+        phrase = re.sub(r"^第?\s*[0-9一二三四五六七八九十百千]+\s*[章回节集卷部篇]\s*", "", phrase)
+        phrase = re.sub(r"^[\s\d.、:：-]+", "", phrase).strip()
+        phrase = phrase[:16] or fallback[:16]
+        return f"第 {idx} 集 · {phrase}"
 
     def _sentences(self, text: str) -> list[str]:
         parts = re.split(r"(?<=[。！？!?；;])\s*|\n+", compact_text(text))
