@@ -5,10 +5,10 @@
 2. 启动一个原生桌面窗口加载界面。
 """
 
+import json
 import os
 import subprocess
 import sys
-import traceback
 from pathlib import Path
 
 import engine
@@ -62,8 +62,22 @@ class Api:
                 "model": cfg.get("model", ""),
                 "has_key": bool(cfg.get("api_key")),
                 "temperature": cfg.get("temperature", 0.7),
+                "has_xai": bool(cfg.get("xai_api_key")),
+                "has_gemini": bool(cfg.get("gemini_api_key")),
+                "gemini_voice": cfg.get("gemini_voice", "Kore"),
+                "video_aspect_ratio": cfg.get("video_aspect_ratio", "9:16"),
+                "video_resolution": cfg.get("video_resolution", "720p"),
+                "consistency": cfg.get("consistency", "strong"),
             },
         }
+
+    def _progress(self, msg: str) -> None:
+        try:
+            self.window.evaluate_js(
+                "window.onProduceProgress && window.onProduceProgress(%s)" % json.dumps(msg)
+            )
+        except Exception:
+            pass
 
     def set_theme(self, theme: str) -> dict:
         try:
@@ -162,18 +176,30 @@ class Api:
         except Exception as exc:
             return {"ok": False, "error": friendly_error(exc)}
 
-    # ---- 步骤 3：执行选中脚本 ----
+    # ---- 步骤 3：执行选中脚本（生成带配音与字幕的视频）----
     def run_script(self, index: int) -> dict:
         try:
             item = next((s for s in self.scripts if s.index == int(index)), None)
             if not item:
                 raise ValueError("请先在脚本列表中选择一个标题")
-            path = self.storage.save_run(
-                item,
-                "success",
-                "当前版本已完成脚本执行准备；后续接入视频生成 API 后，会在这里开始生成画面、配音和最终视频。",
-            )
-            return {"ok": True, "path": str(path)}
+            if not self.story or not self.storage.current_dir:
+                raise ValueError("请先完成第 1、2 步")
+
+            cfg = load_config()
+            if not cfg.get("xai_api_key"):
+                raise ValueError("请先在「设置」中填写 xAI(Grok) API Key")
+            if not cfg.get("gemini_api_key"):
+                raise ValueError("请先在「设置」中填写 Gemini API Key")
+
+            from pipeline import VideoProducer, have_ffmpeg
+
+            if not have_ffmpeg():
+                raise ValueError("未检测到 ffmpeg，请先安装 ffmpeg 后再制作视频")
+
+            producer = VideoProducer(cfg, progress=self._progress)
+            final = producer.produce(item, self.story, self.storage.current_dir)
+            run_path = self.storage.save_run(item, "success", f"已生成视频：{final}")
+            return {"ok": True, "video_path": str(final), "run_path": str(run_path)}
         except Exception as exc:
             return {"ok": False, "error": friendly_error(exc)}
 

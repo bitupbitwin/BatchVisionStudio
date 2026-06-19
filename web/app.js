@@ -64,10 +64,17 @@ async function refreshStatus() {
     $("statusText").textContent = "本地规则模式";
   }
   // 回填设置表单
-  $("cfgUrl").value = st.config.api_url || "";
-  $("cfgModel").value = st.config.model || "";
-  $("cfgTemp").value = st.config.temperature ?? 0.7;
-  $("cfgKey").placeholder = st.config.has_key ? "已保存（留空则不修改）" : "粘贴你的 API Key";
+  const c = st.config;
+  $("cfgUrl").value = c.api_url || "";
+  $("cfgModel").value = c.model || "";
+  $("cfgTemp").value = c.temperature ?? 0.7;
+  $("cfgKey").placeholder = c.has_key ? "已保存（留空则不修改）" : "粘贴你的 API Key";
+  $("cfgXaiKey").placeholder = c.has_xai ? "已保存（留空则不修改）" : "粘贴 xAI API Key";
+  $("cfgGeminiKey").placeholder = c.has_gemini ? "已保存（留空则不修改）" : "粘贴 Gemini API Key";
+  $("cfgVoice").value = c.gemini_voice || "Kore";
+  $("cfgAspect").value = c.video_aspect_ratio || "9:16";
+  $("cfgRes").value = c.video_resolution || "720p";
+  $("cfgConsistency").value = c.consistency || "strong";
 }
 
 /* ---------- 配色主题 ---------- */
@@ -98,13 +105,19 @@ async function saveSettings() {
     api_key: $("cfgKey").value,
     model: $("cfgModel").value,
     temperature: $("cfgTemp").value,
+    xai_api_key: $("cfgXaiKey").value,
+    gemini_api_key: $("cfgGeminiKey").value,
+    gemini_voice: $("cfgVoice").value,
+    video_aspect_ratio: $("cfgAspect").value,
+    video_resolution: $("cfgRes").value,
+    consistency: $("cfgConsistency").value,
   };
   const res = await window.pywebview.api.save_settings(cfg);
   if (res.ok) {
     closeSettings();
-    $("cfgKey").value = "";
+    ["cfgKey", "cfgXaiKey", "cfgGeminiKey"].forEach((id) => ($(id).value = ""));
     await refreshStatus();
-    toast(res.api_connected ? "已连接模型 ✓" : "已保存（当前为本地模式）", res.api_connected ? "ok" : "info");
+    toast(res.api_connected ? "已保存，文本模型已连接 ✓" : "已保存", res.api_connected ? "ok" : "info");
   } else {
     toast(res.error || "保存失败", "err");
   }
@@ -252,16 +265,31 @@ function selectScript(index) {
 }
 
 /* ---------- 步骤 3 ---------- */
+/* 制作进度：由后端通过 evaluate_js 调用 */
+window.onProduceProgress = function (msg) {
+  const log = $("produceLog");
+  log.classList.remove("hidden");
+  const line = document.createElement("div");
+  line.textContent = "• " + msg;
+  log.appendChild(line);
+  log.scrollTop = log.scrollHeight;
+};
+
 async function runScript() {
   if (state.selected == null) { toast("请先选择一个脚本", "info"); return; }
-  await withBusy("step3", "status3", "执行中…", async () => {
+  const log = $("produceLog");
+  log.innerHTML = "";
+  log.classList.remove("hidden");
+  await withBusy("step3", "status3", "制作视频中…", async () => {
     const res = await window.pywebview.api.run_script(state.selected);
     if (res.ok) {
       setStatus("status3", "成功", "ok");
-      toast("已生成执行记录", "ok");
+      window.onProduceProgress("完成：" + res.video_path);
+      toast("视频已生成 ✓", "ok");
     } else {
       setStatus("status3", "失败", "err");
-      toast(res.error || "执行失败", "err");
+      window.onProduceProgress("失败：" + (res.error || "未知错误"));
+      toast(res.error || "制作失败", "err");
     }
   });
 }

@@ -6,7 +6,17 @@
 
 1. **编排故事**：输入网址或粘贴长文本，生成故事标题、梗概、人物/要素和视频风格，并保存到本地项目文件夹。几万字的长文会**分块通读全文**（模型模式用 map-reduce 归并摘要，本地模式跨全篇采样），不再只看开头。
 2. **生成多个脚本**：按设定时长拆分成多集，生成脚本标题、旁白和镜头提示词，并逐个保存。每集**标题力求概括且有吸引力**（模型模式按爆款短视频标题规则生成；本地模式提取本段最具代表性的分句）。
-3. **选择标题开始执行**：选择某个脚本，生成执行记录。后续接入视频生成 API 后，这一步会继续生成画面、配音和最终视频。
+3. **选择标题开始执行 → 生成成片**：选择某个脚本，自动调用 **Grok（xAI）生成视频**、**Gemini（Google）TTS 配音**，并用 ffmpeg 拼接、对齐音频、烧录字幕，输出到项目的 `videos/`。
+
+### 视频制作能力（第 3 步）
+
+- **真实出片**：逐镜头调用 Grok Imagine 视频生成 + Gemini TTS 配音 + 自动字幕，合成带声音与字幕的 mp4。
+- **人物/场景一致性（强一致 + 帧衔接）**：先生成一张统一的角色/场景参考图，每个镜头用「图生视频」从参考图出发，并把上一镜尾帧作为下一镜首帧，保证连贯与连续；也可在设置里切到「轻量一致」省成本。
+- **字幕**：按旁白与时长生成 `.srt`，并烧录进画面（同时保留 `.srt` 旁车文件）。
+- **配音**：Gemini TTS，多音色可选（Kore/Puck/Zephyr…）。
+- **背景音乐**：暂未接入（已预留位置，后续可加）。
+
+> 依赖：需安装 **ffmpeg**，并在「设置」中填入 **xAI(Grok) API Key** 与 **Gemini API Key**。中文字幕烧录需系统装有中文字体（如 Noto Sans CJK），否则会自动退化为软字幕。
 
 ## 界面亮点
 
@@ -23,6 +33,8 @@
 ```bash
 pip install pywebview
 ```
+
+视频制作（第 3 步）还需要系统安装 **ffmpeg**（Windows 可从 ffmpeg.org 下载并加入 PATH；macOS `brew install ffmpeg`；Linux `sudo apt install ffmpeg`）。
 
 > 各平台运行时：Windows 自带 WebView2；macOS 自带 WebKit；Linux 需安装 `webkit2gtk`（如 `sudo apt install gir1.2-webkit2-4.1 python3-gi`）。
 
@@ -69,9 +81,11 @@ outputs/
 
 ```text
 app.py        PyWebView 桌面外壳 + JS↔Python 桥接
-engine.py     核心逻辑：故事编排、脚本生成、模型调用、项目存储
+engine.py     核心逻辑：故事编排、脚本生成、文本模型调用、配置/主题、项目存储
+providers.py  外部生成式 API 客户端：Grok 视频/图像（xAI）、Gemini TTS（Google）
+pipeline.py   视频制作流水线：强一致帧衔接 + TTS + 字幕 + ffmpeg 合成
 web/          界面层（index.html / style.css / app.js）
-outputs/      生成的项目输出
+outputs/      生成的项目输出（含 videos/ 成片与 .srt 字幕）
 ```
 
 ## 下一步建议

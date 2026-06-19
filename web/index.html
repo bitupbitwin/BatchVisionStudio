@@ -90,6 +90,8 @@
           </div>
         </div>
 
+        <div id="produceLog" class="produce-log hidden"></div>
+
         <div class="project-bar">
           <span id="projectPath" class="muted">尚未创建项目</span>
           <button id="openFolderBtn" class="ghost-btn" disabled>打开输出文件夹</button>
@@ -128,7 +130,8 @@
         <h2>API 设置</h2>
         <button id="closeSettings" class="icon-btn">✕</button>
       </div>
-      <p class="muted">填写后保存即生效（OpenAI Chat Completions 兼容）。留空则使用本地规则生成。</p>
+      <h3 class="settings-group">文本模型（编排故事 / 写脚本）</h3>
+      <p class="muted">OpenAI Chat Completions 兼容；留空则使用本地规则生成。</p>
       <label class="field">接口地址
         <input id="cfgUrl" type="text" placeholder="https://你的接口地址/v1/chat/completions" />
       </label>
@@ -141,6 +144,45 @@
         </label>
         <label class="field small">temperature
           <input id="cfgTemp" type="number" min="0" max="2" step="0.1" value="0.7" />
+        </label>
+      </div>
+
+      <h3 class="settings-group">视频生成（Grok / xAI）</h3>
+      <label class="field">xAI API Key
+        <input id="cfgXaiKey" type="password" placeholder="留空表示沿用已保存的 Key" />
+      </label>
+      <div class="field-row">
+        <label class="field">画面比例
+          <select id="cfgAspect">
+            <option value="9:16">9:16 竖屏</option>
+            <option value="16:9">16:9 横屏</option>
+            <option value="1:1">1:1 方形</option>
+          </select>
+        </label>
+        <label class="field">分辨率
+          <select id="cfgRes">
+            <option value="720p">720p</option>
+            <option value="1080p">1080p</option>
+          </select>
+        </label>
+        <label class="field">一致性
+          <select id="cfgConsistency">
+            <option value="strong">强一致+帧衔接</option>
+            <option value="light">轻量一致</option>
+          </select>
+        </label>
+      </div>
+
+      <h3 class="settings-group">配音（Gemini TTS / Google）</h3>
+      <div class="field-row">
+        <label class="field">Gemini API Key
+          <input id="cfgGeminiKey" type="password" placeholder="留空表示沿用已保存的 Key" />
+        </label>
+        <label class="field small">音色
+          <select id="cfgVoice">
+            <option>Kore</option><option>Puck</option><option>Zephyr</option>
+            <option>Charon</option><option>Fenrir</option><option>Leda</option>
+          </select>
         </label>
       </div>
       <div class="modal-foot">

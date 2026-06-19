@@ -259,6 +259,15 @@ textarea::placeholder { color: var(--ink-soft); opacity: 0.6; }
 .field-row .field { flex: 1; }
 .field-row .field.small { flex: 0 0 130px; }
 .modal-foot { display: flex; justify-content: flex-end; gap: 10px; margin-top: 22px; }
+.modal { max-height: 88vh; overflow: auto; }
+.settings-group { font-size: 13px; font-weight: 800; color: var(--accent-deep); margin: 20px 0 2px; }
+.settings-group:first-of-type { margin-top: 4px; }
+.field select { border: 1px solid var(--glass-border); background: rgba(255,255,255,0.8); border-radius: 10px;
+  padding: 10px 12px; font: inherit; font-size: 14px; color: var(--ink); outline: none; }
+
+.produce-log { margin-top: 14px; max-height: 150px; overflow: auto; padding: 12px 14px; border-radius: 12px;
+  background: rgba(0,0,0,0.04); border: 1px solid var(--glass-border); font-size: 12.5px; line-height: 1.7; color: var(--ink-soft); }
+.produce-log div { white-space: pre-wrap; word-break: break-all; }
 
 /* ---------- toast ---------- */
 .toast { position: fixed; left: 50%; bottom: 32px; transform: translateX(-50%) translateY(20px); z-index: 80; padding: 13px 22px;

@@ -1,0 +1,236 @@
+"""视频制作流水线：把一集脚本变成带配音与字幕的最终视频。
+
+强一致策略：先用 Grok 生成一张角色/场景参考图，每个镜头用「图生视频」从参考图出发，
+并把上一镜的尾帧作为下一镜的首帧，实现人物/场景的连贯与连续。
+配音用 Gemini TTS，字幕由旁白与时长生成，最后用 ffmpeg 拼接、对齐音频并烧录字幕。
+
+注：本模块依赖外部 API Key（xAI / Gemini）与系统 ffmpeg；真实产出需在配置 Key 后运行。
+"""
+
+import shutil
+import subprocess
+from pathlib import Path
+
+from engine import safe_name
+from providers import GeminiTTSClient, GrokClient
+
+GROK_MAX_DURATION = 10  # Grok Imagine 单段约 10 秒上限
+
+
+def have_ffmpeg() -> bool:
+    return bool(shutil.which("ffmpeg") and shutil.which("ffprobe"))
+
+
+def _cjk_fontfile() -> str | None:
+    """找一个可用的中文字体用于字幕烧录，找不到返回 None。"""
+    candidates = [
+        "/usr/share/fonts/opentype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/noto/NotoSansCJK-Regular.ttc",
+        "/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc",
+        "/System/Library/Fonts/PingFang.ttc",
+        "C:\\Windows\\Fonts\\msyh.ttc",
+    ]
+    for path in candidates:
+        if Path(path).exists():
+            return path
+    return None
+
+
+def _target_dims(aspect_ratio: str, resolution: str) -> tuple[int, int]:
+    short = 1080 if "1080" in resolution else 720
+    ratios = {"9:16": (9, 16), "16:9": (16, 9), "1:1": (1, 1), "4:5": (4, 5)}
+    rw, rh = ratios.get(aspect_ratio, (9, 16))
+    if rw <= rh:  # 竖屏/方形：短边为宽
+        w, h = short, round(short * rh / rw)
+    else:         # 横屏：短边为高
+        h, w = short, round(short * rw / rh)
+    return (w - w % 2, h - h % 2)
+
+
+def _srt_time(seconds: float) -> str:
+    ms = int(round(seconds * 1000))
+    h, ms = divmod(ms, 3600000)
+    m, ms = divmod(ms, 60000)
+    s, ms = divmod(ms, 1000)
+    return f"{h:02d}:{m:02d}:{s:02d},{ms:03d}"
+
+
+class VideoProducer:
+    def __init__(self, config: dict, progress=None):
+        self.cfg = config
+        self.progress = progress or (lambda msg: None)
+        self.consistency = config.get("consistency", "strong")
+        self.aspect = config.get("video_aspect_ratio", "9:16")
+        self.resolution = config.get("video_resolution", "720p")
+        self.grok = GrokClient(
+            config.get("xai_api_key", ""),
+            config.get("xai_video_model", "grok-imagine-video"),
+            config.get("xai_image_model", "grok-2-image"),
+        )
+        self.tts = GeminiTTSClient(
+            config.get("gemini_api_key", ""),
+            config.get("gemini_tts_model", "gemini-2.5-flash-preview-tts"),
+            config.get("gemini_voice", "Kore"),
+        )
+        self.dims = _target_dims(self.aspect, self.resolution)
+
+    # ---------- 对外入口 ----------
+    def produce(self, item, story: dict, out_dir: Path) -> Path:
+        if not have_ffmpeg():
+            raise RuntimeError("未检测到 ffmpeg，请先安装 ffmpeg 后再制作视频。")
+        if not item.shots:
+            raise RuntimeError("该脚本没有镜头，无法制作视频。")
+
+        out_dir = Path(out_dir)
+        work = out_dir / f"_work_{item.index:03d}"
+        work.mkdir(parents=True, exist_ok=True)
+
+        prev_frame = None
+        if self.consistency == "strong":
+            prev_frame = self._ensure_reference(story, out_dir)
+
+        prefix = self._consistency_prefix(story)
+        normalized, segments = [], []
+
+        for i, shot in enumerate(item.shots, 1):
+            n = len(item.shots)
+            duration = max(1, min(GROK_MAX_DURATION, int(shot.get("duration", 6))))
+
+            self.progress(f"镜头 {i}/{n}：生成视频…")
+            prompt = f"{prefix} 本镜画面：{shot.get('visual_prompt', '')}"
+            image_bytes = prev_frame.read_bytes() if (prev_frame and prev_frame.exists()) else None
+            clip_bytes = self.grok.generate_video(
+                prompt, image_bytes, duration, self.aspect, self.resolution
+            )
+            raw_clip = work / f"shot_{i:03d}_raw.mp4"
+            raw_clip.write_bytes(clip_bytes)
+
+            audio_path = None
+            voiceover = (shot.get("voiceover") or "").strip()
+            if voiceover:
+                self.progress(f"镜头 {i}/{n}：配音…")
+                wav = self.tts.synthesize(voiceover)
+                audio_path = work / f"shot_{i:03d}.wav"
+                audio_path.write_bytes(wav)
+
+            self.progress(f"镜头 {i}/{n}：规整音画…")
+            norm = work / f"shot_{i:03d}.mp4"
+            self._normalize_clip(raw_clip, audio_path, duration, norm)
+            normalized.append(norm)
+            segments.append((duration, voiceover))
+
+            if self.consistency == "strong":
+                frame = work / f"frame_{i:03d}.png"
+                if self._extract_last_frame(norm, frame):
+                    prev_frame = frame
+
+        # 字幕
+        srt_path = out_dir / "videos" / f"{item.index:03d}_{safe_name(item.title)}.srt"
+        srt_path.parent.mkdir(parents=True, exist_ok=True)
+        self._build_srt(segments, srt_path)
+
+        # 拼接 + 烧录字幕
+        self.progress("合成最终视频（拼接 + 字幕）…")
+        final_path = out_dir / "videos" / f"{item.index:03d}_{safe_name(item.title)}.mp4"
+        concat_path = work / "concat.mp4"
+        self._concat(normalized, concat_path)
+        self._burn_subtitles(concat_path, srt_path, final_path)
+        return final_path
+
+    # ---------- 强一致参考图 ----------
+    def _ensure_reference(self, story: dict, out_dir: Path) -> Path:
+        ref = out_dir / "assets" / "reference.png"
+        if not ref.exists():
+            self.progress("生成统一的角色/场景参考图…")
+            ref.parent.mkdir(parents=True, exist_ok=True)
+            ref.write_bytes(self.grok.generate_image(self._reference_prompt(story)))
+        return ref
+
+    def _reference_prompt(self, story: dict) -> str:
+        return (
+            f"为短视频系列绘制统一的角色与场景基准画面。标题：{story.get('title', '')}。"
+            f"主要人物/要素：{story.get('characters', '')}。整体风格：{story.get('style', '')}。"
+            "要求主体清晰、画风统一，作为后续所有镜头的视觉基准。"
+        )
+
+    def _consistency_prefix(self, story: dict) -> str:
+        return (
+            f"统一画风：{story.get('style', '')}。固定角色与场景设定：{story.get('characters', '')}。"
+            "请在所有镜头中保持人物外貌、服装、场景与画风的一致与连贯。"
+        )
+
+    # ---------- ffmpeg 封装 ----------
+    def _run(self, args: list[str]) -> None:
+        proc = subprocess.run(["ffmpeg", "-y", "-hide_banner", "-loglevel", "error", *args],
+                              capture_output=True, text=True)
+        if proc.returncode != 0:
+            raise RuntimeError(f"ffmpeg 失败：{(proc.stderr or '').strip()[:400]}")
+
+    def _normalize_clip(self, src: Path, audio: Path | None, duration: int, out: Path) -> None:
+        w, h = self.dims
+        vf = (f"scale={w}:{h}:force_original_aspect_ratio=increase,"
+              f"crop={w}:{h},fps=30,format=yuv420p")
+        if audio:
+            self._run([
+                "-i", str(src), "-i", str(audio),
+                "-filter_complex", f"[0:v]{vf}[v];[1:a]apad[a]",
+                "-map", "[v]", "-map", "[a]", "-t", str(duration),
+                "-c:v", "libx264", "-c:a", "aac", "-ar", "44100", "-ac", "2", str(out),
+            ])
+        else:
+            self._run([
+                "-i", str(src),
+                "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+                "-filter_complex", f"[0:v]{vf}[v]",
+                "-map", "[v]", "-map", "1:a", "-t", str(duration),
+                "-c:v", "libx264", "-c:a", "aac", "-ar", "44100", "-ac", "2", str(out),
+            ])
+
+    def _extract_last_frame(self, src: Path, out: Path) -> bool:
+        try:
+            self._run(["-sseof", "-0.2", "-i", str(src), "-frames:v", "1", "-q:v", "2", str(out)])
+            if out.exists() and out.stat().st_size > 0:
+                return True
+        except RuntimeError:
+            pass
+        try:
+            self._run(["-i", str(src), "-frames:v", "1", "-q:v", "2", str(out)])
+            return out.exists() and out.stat().st_size > 0
+        except RuntimeError:
+            return False
+
+    def _concat(self, clips: list[Path], out: Path) -> None:
+        listfile = out.parent / "concat.txt"
+        listfile.write_text("".join(f"file '{c.resolve()}'\n" for c in clips), encoding="utf-8")
+        self._run([
+            "-f", "concat", "-safe", "0", "-i", str(listfile),
+            "-c:v", "libx264", "-c:a", "aac", "-ar", "44100", "-ac", "2", str(out),
+        ])
+
+    def _burn_subtitles(self, src: Path, srt: Path, out: Path) -> None:
+        font = _cjk_fontfile()
+        style = "Fontsize=18,Outline=1,Shadow=0,MarginV=40"
+        sub_path = str(srt).replace("\\", "/").replace(":", "\\:").replace("'", "\\'")
+        if font:
+            fontsdir = str(Path(font).parent).replace("\\", "/").replace(":", "\\:")
+            vf = f"subtitles='{sub_path}':fontsdir='{fontsdir}':force_style='{style}'"
+        else:
+            vf = f"subtitles='{sub_path}':force_style='{style}'"
+        try:
+            self._run(["-i", str(src), "-vf", vf, "-c:a", "copy", str(out)])
+        except RuntimeError:
+            # 烧录失败（如缺中文字体）：退而求其次，把字幕作为软字幕封装，并保留 .srt 旁车
+            self._run([
+                "-i", str(src), "-i", str(srt),
+                "-c:v", "copy", "-c:a", "copy", "-c:s", "mov_text", str(out),
+            ])
+
+    def _build_srt(self, segments: list[tuple[int, str]], path: Path) -> None:
+        lines, t = [], 0.0
+        idx = 1
+        for duration, text in segments:
+            if text:
+                lines.append(f"{idx}\n{_srt_time(t)} --> {_srt_time(t + duration)}\n{text}\n")
+                idx += 1
+            t += duration
+        path.write_text("\n".join(lines), encoding="utf-8")

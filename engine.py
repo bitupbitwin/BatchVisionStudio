@@ -193,17 +193,29 @@ def load_config() -> dict:
         return {}
 
 
+# 可保存的配置项；新增 Grok 视频与 Gemini TTS 相关字段
+CONFIG_STR_KEYS = (
+    "api_url", "api_key", "model",
+    "xai_api_key", "xai_video_model", "xai_image_model",
+    "gemini_api_key", "gemini_tts_model", "gemini_voice",
+    "video_aspect_ratio", "video_resolution", "consistency",
+)
+
+
 def save_config(config: dict) -> None:
-    clean = {
-        "api_url": str(config.get("api_url", "")).strip(),
-        "api_key": str(config.get("api_key", "")).strip(),
-        "model": str(config.get("model", "")).strip(),
-    }
-    try:
-        clean["temperature"] = float(config.get("temperature", 0.7))
-    except (TypeError, ValueError):
-        clean["temperature"] = 0.7
-    CONFIG_PATH.write_text(json.dumps(clean, ensure_ascii=False, indent=2), encoding="utf-8")
+    merged = load_config()
+    for key in CONFIG_STR_KEYS:
+        if key in config:
+            value = str(config.get(key, "")).strip()
+            # 留空的密钥/字段沿用旧值，避免误清空
+            if value or key not in merged:
+                merged[key] = value
+    if "temperature" in config or "temperature" not in merged:
+        try:
+            merged["temperature"] = float(config.get("temperature", merged.get("temperature", 0.7)))
+        except (TypeError, ValueError):
+            merged["temperature"] = 0.7
+    CONFIG_PATH.write_text(json.dumps(merged, ensure_ascii=False, indent=2), encoding="utf-8")
 
 
 def load_ui_config() -> dict:
