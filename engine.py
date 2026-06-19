@@ -17,6 +17,9 @@ from pathlib import Path
 APP_DIR = Path(__file__).resolve().parent
 OUTPUT_DIR = APP_DIR / "outputs"
 CONFIG_PATH = APP_DIR / "config.json"
+UI_CONFIG_PATH = APP_DIR / "ui_config.json"
+
+THEMES = ("orange", "red", "blue", "green", "purple", "pink", "yellow")
 
 
 def now_id() -> str:
@@ -186,6 +189,28 @@ def save_config(config: dict) -> None:
     except (TypeError, ValueError):
         clean["temperature"] = 0.7
     CONFIG_PATH.write_text(json.dumps(clean, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def load_ui_config() -> dict:
+    if not UI_CONFIG_PATH.exists():
+        return {}
+    try:
+        return json.loads(UI_CONFIG_PATH.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+
+
+def get_theme() -> str:
+    theme = load_ui_config().get("theme", "orange")
+    return theme if theme in THEMES else "orange"
+
+
+def save_theme(theme: str) -> str:
+    theme = theme if theme in THEMES else "orange"
+    ui = load_ui_config()
+    ui["theme"] = theme
+    UI_CONFIG_PATH.write_text(json.dumps(ui, ensure_ascii=False, indent=2), encoding="utf-8")
+    return theme
 
 
 class ModelClient:

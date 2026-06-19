@@ -12,7 +12,16 @@ import traceback
 from pathlib import Path
 
 import engine
-from engine import ProjectStorage, ScriptItem, StoryEngine, fetch_url_text, load_config, save_config
+from engine import (
+    ProjectStorage,
+    ScriptItem,
+    StoryEngine,
+    fetch_url_text,
+    get_theme,
+    load_config,
+    save_config,
+    save_theme,
+)
 
 APP_DIR = Path(__file__).resolve().parent
 WEB_INDEX = APP_DIR / "web" / "index.html"
@@ -47,6 +56,7 @@ class Api:
         cfg = load_config()
         return {
             "api_connected": self.engine.model.available(),
+            "theme": get_theme(),
             "config": {
                 "api_url": cfg.get("api_url", ""),
                 "model": cfg.get("model", ""),
@@ -54,6 +64,12 @@ class Api:
                 "temperature": cfg.get("temperature", 0.7),
             },
         }
+
+    def set_theme(self, theme: str) -> dict:
+        try:
+            return {"ok": True, "theme": save_theme(theme)}
+        except Exception as exc:
+            return {"ok": False, "error": friendly_error(exc)}
 
     def save_settings(self, cfg: dict) -> dict:
         try:

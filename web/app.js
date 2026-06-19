@@ -54,6 +54,7 @@ function lockSteps(lock) {
 /* ---------- 状态 / 设置 ---------- */
 async function refreshStatus() {
   const st = await window.pywebview.api.get_status();
+  if (st.theme) applyTheme(st.theme);
   const pill = $("statusPill");
   if (st.api_connected) {
     pill.className = "pill online";
@@ -67,6 +68,25 @@ async function refreshStatus() {
   $("cfgModel").value = st.config.model || "";
   $("cfgTemp").value = st.config.temperature ?? 0.7;
   $("cfgKey").placeholder = st.config.has_key ? "已保存（留空则不修改）" : "粘贴你的 API Key";
+}
+
+/* ---------- 配色主题 ---------- */
+const THEMES = ["orange", "red", "blue", "green", "purple", "pink", "yellow"];
+
+function applyTheme(name) {
+  if (!THEMES.includes(name)) name = "orange";
+  document.body.dataset.theme = name;
+  document.querySelectorAll(".swatch").forEach((s) =>
+    s.classList.toggle("active", s.dataset.theme === name)
+  );
+}
+
+function toggleThemePop() { $("themePop").classList.toggle("hidden"); }
+
+async function chooseTheme(name) {
+  applyTheme(name);
+  $("themePop").classList.add("hidden");
+  try { await window.pywebview.api.set_theme(name); } catch (e) {}
 }
 
 function openSettings() { $("settingsModal").classList.remove("hidden"); }
@@ -268,6 +288,11 @@ function bind() {
   $("openFolderBtn").onclick = openFolder;
   $("settingsBtn").onclick = openSettings;
   $("statusPill").onclick = openSettings;
+  $("themeBtn").onclick = (e) => { e.stopPropagation(); toggleThemePop(); };
+  document.querySelectorAll(".swatch").forEach((s) => (s.onclick = () => chooseTheme(s.dataset.theme)));
+  document.addEventListener("click", (e) => {
+    if (!$("themePop").contains(e.target) && e.target.id !== "themeBtn") $("themePop").classList.add("hidden");
+  });
   $("closeSettings").onclick = closeSettings;
   $("cancelSettings").onclick = closeSettings;
   $("saveSettings").onclick = saveSettings;

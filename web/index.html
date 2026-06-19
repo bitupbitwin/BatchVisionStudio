@@ -6,7 +6,7 @@
   <title>自动视频脚本工作台</title>
   <link rel="stylesheet" href="style.css" />
 </head>
-<body>
+<body data-theme="orange">
   <!-- 背景：橙色渐变 + 模糊光斑 -->
   <div class="bg">
     <span class="blob blob-1"></span>
@@ -28,7 +28,21 @@
         <button id="statusPill" class="pill" title="点击进行 API 设置">
           <span class="dot"></span><span id="statusText">检测中…</span>
         </button>
+        <button id="themeBtn" class="icon-btn" title="配色主题">🎨</button>
         <button id="settingsBtn" class="icon-btn" title="设置">⚙︎</button>
+
+        <div id="themePop" class="theme-pop glass hidden">
+          <div class="pop-title">配色主题</div>
+          <div class="swatches">
+            <span class="swatch sw-orange" data-theme="orange" title="橙色"></span>
+            <span class="swatch sw-red" data-theme="red" title="红色"></span>
+            <span class="swatch sw-blue" data-theme="blue" title="蓝色"></span>
+            <span class="swatch sw-green" data-theme="green" title="绿色"></span>
+            <span class="swatch sw-purple" data-theme="purple" title="紫色"></span>
+            <span class="swatch sw-pink" data-theme="pink" title="粉色"></span>
+            <span class="swatch sw-yellow" data-theme="yellow" title="黄色"></span>
+          </div>
+        </div>
       </div>
     </header>
 
