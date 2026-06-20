@@ -50,6 +50,9 @@ function lockSteps(lock) {
   $("step2").disabled = lock || !window.__storyReady;
   $("step3").disabled = lock || state.selected == null;
   $("stepAll").disabled = lock || !(state.scripts && state.scripts.length);
+  $("previewRefsBtn").disabled = lock || !window.__storyReady;
+  $("editScriptBtn").disabled = lock || state.selected == null;
+  $("redoBtn").disabled = lock || state.selected == null;
 }
 
 /* ---------- 状态 / 设置 ---------- */
@@ -288,7 +291,7 @@ function selectScript(index) {
   const el = $("scriptDetail");
   el.className = "result-body";
   el.innerHTML = `<h3>${esc(s.title)}</h3><b>摘要：</b>${esc(s.summary)}<h3>剧本</h3>${body}`;
-  if (!state.busy) $("step3").disabled = false;
+  if (!state.busy) lockSteps(false);
 }
 
 /* ---------- 步骤 3 ---------- */
@@ -377,6 +380,81 @@ async function openFolder() {
   if (!res.ok) toast(res.error || "无法打开文件夹", "err");
 }
 
+/* ---------- 第5期：预览 / 编辑 / 重做 ---------- */
+async function previewRefs() {
+  if (state.busy) return;
+  await withBusy("previewRefsBtn", "status2", "生成参考图…", async () => {
+    const res = await window.pywebview.api.preview_refs();
+    const panel = $("refsPanel");
+    if (!res.ok) { toast(res.error || "预览失败", "err"); return; }
+    if (!res.refs.length) { toast("当前没有角色/场景可预览（需模型模式产出角色表）", "info"); return; }
+    panel.classList.remove("hidden");
+    panel.innerHTML = res.refs.map((r) =>
+      `<figure><img src="${r.data}" alt="${esc(r.name)}"/><figcaption>${esc(r.type)}·${esc(r.name)}</figcaption></figure>`
+    ).join("");
+    setStatus("status2", "参考图已就绪", "ok");
+  });
+}
+
+function toggleEditor() {
+  const s = state.scripts.find((x) => x.index === state.selected);
+  if (!s) { toast("请先选择一集", "info"); return; }
+  const editor = $("scriptEditor");
+  if (!editor.classList.contains("hidden")) { editor.classList.add("hidden"); $("scriptDetail").classList.remove("hidden"); return; }
+  const scenes = (s.scenes && s.scenes.length) ? s.scenes : [{ location: "", beats: s.shots.map((sh) => ({ speaker: sh.speaker || "旁白", line: sh.voiceover || "", action: sh.action || "", shot_prompt: sh.visual_prompt || "", duration: sh.duration || 0 })) }];
+  let html = `<label class="field">标题<input id="edTitle" type="text" value="${esc(s.title)}"/></label>`;
+  scenes.forEach((sc, si) => {
+    html += `<div class="ed-scene" data-si="${si}"><input class="ed-loc" placeholder="场景地点" value="${esc(sc.location || "")}"/>`;
+    (sc.beats || []).forEach((b, bi) => {
+      html += `<div class="ed-beat" data-bi="${bi}">` +
+        `<input class="ed-spk" placeholder="说话人" value="${esc(b.speaker || "")}"/>` +
+        `<input class="ed-line" placeholder="台词" value="${esc(b.line || "")}"/>` +
+        `<input class="ed-act" placeholder="动作(可选)" value="${esc(b.action || "")}"/></div>`;
+    });
+    html += `</div>`;
+  });
+  html += `<div class="modal-foot"><button id="edCancel" class="ghost-btn">取消</button><button id="edSave" class="primary-btn">保存修改</button></div>`;
+  editor.innerHTML = html;
+  editor.classList.remove("hidden");
+  $("scriptDetail").classList.add("hidden");
+  $("edCancel").onclick = toggleEditor;
+  $("edSave").onclick = saveScriptEdit;
+}
+
+async function saveScriptEdit() {
+  const s = state.scripts.find((x) => x.index === state.selected);
+  if (!s) return;
+  const scenes = [...document.querySelectorAll(".ed-scene")].map((sc) => ({
+    location: sc.querySelector(".ed-loc").value,
+    beats: [...sc.querySelectorAll(".ed-beat")].map((b) => ({
+      speaker: b.querySelector(".ed-spk").value,
+      line: b.querySelector(".ed-line").value,
+      action: b.querySelector(".ed-act").value,
+    })),
+  }));
+  const res = await window.pywebview.api.update_script(state.selected, { title: $("edTitle").value, scenes });
+  if (!res.ok) { toast(res.error || "保存失败", "err"); return; }
+  const i = state.scripts.findIndex((x) => x.index === state.selected);
+  state.scripts[i] = res.script;
+  renderScripts(state.scripts);
+  selectScript(state.selected);
+  $("scriptEditor").classList.add("hidden");
+  $("scriptDetail").classList.remove("hidden");
+  await refreshJobs();
+  toast("已保存，该集将重做", "ok");
+}
+
+async function redoEpisode() {
+  if (state.selected == null) { toast("请先选择一集", "info"); return; }
+  const log = $("produceLog"); log.innerHTML = ""; log.classList.remove("hidden");
+  await withBusy("redoBtn", "status3", "重做本集…", async () => {
+    const res = await window.pywebview.api.run_script(state.selected, true);
+    await refreshJobs();
+    if (res.ok) { setStatus("status3", "已重做", "ok"); toast("本集已重做 ✓", "ok"); }
+    else { setStatus("status3", "失败", "err"); toast(res.error || "重做失败", "err"); }
+  });
+}
+
 /* ---------- 工具 ---------- */
 function esc(s) {
   return String(s ?? "").replace(/[&<>]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;" }[c]));
@@ -392,6 +470,9 @@ function bind() {
   $("step2").onclick = generate;
   $("step3").onclick = runScript;
   $("stepAll").onclick = runAll;
+  $("previewRefsBtn").onclick = previewRefs;
+  $("editScriptBtn").onclick = toggleEditor;
+  $("redoBtn").onclick = redoEpisode;
   $("openFolderBtn").onclick = openFolder;
   $("settingsBtn").onclick = openSettings;
   $("statusPill").onclick = openSettings;

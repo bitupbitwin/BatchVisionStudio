@@ -7,6 +7,7 @@
 
 import json
 import os
+import shutil
 import subprocess
 import sys
 from pathlib import Path
@@ -227,8 +228,17 @@ class Api:
         jobs.set(item.index, status="done", title=item.title, video_path=str(final), error="")
         return final
 
-    # ---- 步骤 3：制作选中的一集 ----
-    def run_script(self, index: int) -> dict:
+    def _clear_episode(self, index) -> None:
+        """清掉某集的中间产物与状态，使其下次从头重做。"""
+        if not self.storage.current_dir:
+            return
+        work = Path(self.storage.current_dir) / f"_work_{int(index):03d}"
+        if work.exists():
+            shutil.rmtree(work, ignore_errors=True)
+        ProjectJobs(self.storage.current_dir).set(index, status="pending", video_path="", error="")
+
+    # ---- 步骤 3：制作选中的一集（force=True 时强制重做）----
+    def run_script(self, index: int, force: bool = False) -> dict:
         try:
             item = next((s for s in self.scripts if s.index == int(index)), None)
             if not item:
@@ -236,11 +246,61 @@ class Api:
             producer, err = self._make_producer()
             if err:
                 raise ValueError(err)
+            if force:
+                self._clear_episode(item.index)
             jobs = ProjectJobs(self.storage.current_dir)
             final = self._produce_episode(item, producer, jobs)
             return {"ok": True, "video_path": str(final)}
         except Exception as exc:
             return {"ok": False, "error": friendly_error(exc)}
+
+    # ---- 审校：编辑某集脚本（改标题/对白），保存后该集需重做 ----
+    def update_script(self, index: int, data: dict) -> dict:
+        try:
+            item = next((s for s in self.scripts if s.index == int(index)), None)
+            if not item:
+                raise ValueError("未找到该集脚本")
+            scenes = self.engine._normalize_scenes(data.get("scenes", []), 60)
+            shots = self.engine._scenes_to_shots(scenes, 60)
+            if not shots:
+                raise ValueError("脚本内容为空，至少保留一句台词")
+            item.title = str(data.get("title") or item.title)[:40]
+            item.scenes = scenes
+            item.shots = shots
+            item.narration = "\n".join(s["voiceover"] for s in shots if s.get("voiceover"))
+            self.storage.save_scripts(self.scripts)
+            self._clear_episode(item.index)  # 改过的集需重做
+            return {"ok": True, "script": item.to_dict()}
+        except Exception as exc:
+            return {"ok": False, "error": friendly_error(exc)}
+
+    # ---- 审校：预览角色/场景参考图（渲染前确认画面基准）----
+    def preview_refs(self) -> dict:
+        try:
+            if not self.story or not self.storage.current_dir:
+                raise ValueError("请先完成第 1 步：编排故事")
+            cfg = load_config()
+            if not cfg.get("xai_api_key"):
+                raise ValueError("请先在「设置」中填写 xAI(Grok) API Key")
+            from pipeline import VideoProducer
+
+            producer = VideoProducer(cfg, progress=self._progress)
+            char_refs = producer._ensure_character_refs(self.story, self.storage.current_dir)
+            scene_refs = producer._ensure_scene_refs(self.story, self.storage.current_dir)
+            refs = []
+            for name, path in char_refs.items():
+                refs.append({"type": "角色", "name": name, "data": self._img_data_uri(path)})
+            for name, path in scene_refs.items():
+                refs.append({"type": "场景", "name": name, "data": self._img_data_uri(path)})
+            return {"ok": True, "refs": refs}
+        except Exception as exc:
+            return {"ok": False, "error": friendly_error(exc)}
+
+    @staticmethod
+    def _img_data_uri(path) -> str:
+        import base64
+
+        return "data:image/png;base64," + base64.b64encode(Path(path).read_bytes()).decode("ascii")
 
     # ---- 批量制作全部集（跳过已完成，失败继续，可断点续跑）----
     def run_all(self) -> dict:

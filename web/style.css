@@ -280,6 +280,22 @@ textarea::placeholder { color: var(--ink-soft); opacity: 0.6; }
   background: rgba(0,0,0,0.04); border: 1px solid var(--glass-border); font-size: 12.5px; line-height: 1.7; color: var(--ink-soft); }
 .produce-log div { white-space: pre-wrap; word-break: break-all; }
 
+/* 参考图预览 */
+.refs-panel { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 12px; }
+.refs-panel figure { width: 110px; text-align: center; }
+.refs-panel img { width: 110px; height: 150px; object-fit: cover; border-radius: 10px; border: 1px solid var(--glass-border); box-shadow: var(--card-shadow) 0 6px 16px; }
+.refs-panel figcaption { font-size: 11.5px; color: var(--ink-soft); margin-top: 4px; }
+
+/* 脚本编辑器 */
+#scriptEditor .ed-scene { border: 1px solid var(--glass-border); border-radius: 12px; padding: 10px; margin: 8px 0; background: rgba(255,255,255,0.4); }
+#scriptEditor input { border: 1px solid var(--glass-border); background: rgba(255,255,255,0.85); border-radius: 8px; padding: 7px 10px; font: inherit; font-size: 13px; color: var(--ink); outline: none; }
+#scriptEditor .ed-loc { width: 100%; margin-bottom: 8px; font-weight: 600; }
+#scriptEditor .ed-beat { display: flex; gap: 6px; margin: 5px 0; }
+#scriptEditor .ed-spk { flex: 0 0 90px; }
+#scriptEditor .ed-line { flex: 1; }
+#scriptEditor .ed-act { flex: 0 0 130px; }
+#scriptEditor input:focus { border-color: var(--accent-2); box-shadow: 0 0 0 3px var(--ring); }
+
 /* ---------- toast ---------- */
 .toast { position: fixed; left: 50%; bottom: 32px; transform: translateX(-50%) translateY(20px); z-index: 80; padding: 13px 22px;
   border-radius: 14px; font-size: 14px; font-weight: 600; color: #fff; box-shadow: 0 12px 30px rgba(0,0,0,0.25); opacity: 0;

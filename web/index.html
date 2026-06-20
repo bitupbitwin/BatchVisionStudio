@@ -122,8 +122,17 @@
 
       <!-- 选中脚本详情 -->
       <section class="card glass span-2">
-        <div class="card-head"><h2>选中脚本详情</h2></div>
-        <div id="scriptDetail" class="result-body empty">在上方列表选择一集，这里显示旁白脚本与镜头提示词。</div>
+        <div class="card-head">
+          <h2>选中脚本详情</h2>
+          <div class="row-gap">
+            <button id="previewRefsBtn" class="ghost-btn" disabled>预览参考图</button>
+            <button id="editScriptBtn" class="ghost-btn" disabled>编辑本集</button>
+            <button id="redoBtn" class="ghost-btn" disabled>重做本集</button>
+          </div>
+        </div>
+        <div id="refsPanel" class="refs-panel hidden"></div>
+        <div id="scriptDetail" class="result-body empty">在上方列表选择一集，这里显示对白脚本与镜头提示词。</div>
+        <div id="scriptEditor" class="hidden"></div>
       </section>
     </main>
   </div>

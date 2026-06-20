@@ -128,13 +128,13 @@ class GeminiTTSClient:
     BASE = "https://generativelanguage.googleapis.com/v1beta"
 
     def __init__(self, api_key: str, model: str = "gemini-2.5-flash-preview-tts", voice: str = "Kore"):
-        if not api_key:
-            raise RuntimeError("未配置 Gemini API Key")
         self.api_key = api_key
         self.model = model
         self.voice = voice
 
     def synthesize(self, text: str, voice: str | None = None, timeout: int = 120) -> bytes:
+        if not self.api_key:
+            raise RuntimeError("未配置 Gemini API Key")
         payload = {
             "contents": [{"parts": [{"text": text}]}],
             "generationConfig": {
