@@ -7,6 +7,7 @@
 注：本模块依赖外部 API Key（xAI / Gemini）与系统 ffmpeg；真实产出需在配置 Key 后运行。
 """
 
+import json
 import math
 import shutil
 import subprocess
@@ -100,11 +101,33 @@ class VideoProducer:
         normalized, segments = [], []
         prev_frame, prev_speaker, prev_location = None, None, None
 
+        # 镜头级断点续跑：已完成的镜头记录在 work 清单里，重跑时直接复用
+        manifest_path = work / "manifest.json"
+        manifest = {}
+        if manifest_path.exists():
+            try:
+                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+            except json.JSONDecodeError:
+                manifest = {}
+
         for i, shot in enumerate(item.shots, 1):
             n = len(item.shots)
             speaker = shot.get("speaker", "")
             location = shot.get("location", "")
             voiceover = (shot.get("voiceover") or "").strip()
+            norm = work / f"shot_{i:03d}.mp4"
+
+            done = manifest.get(str(i))
+            if done and norm.exists() and norm.stat().st_size > 0:
+                self.progress(f"镜头 {i}/{n}：复用已完成片段")
+                normalized.append(norm)
+                segments.append((done.get("duration", 0), done.get("speaker", ""), done.get("voiceover", "")))
+                if self.consistency == "strong":
+                    frame = work / f"frame_{i:03d}.png"
+                    if frame.exists() or self._extract_last_frame(norm, frame):
+                        prev_frame = frame
+                prev_speaker, prev_location = speaker, location
+                continue
 
             # 先配音：用该角色固定音色，并用音频实际时长决定该镜时长（对话节奏自然）
             audio_path = None
@@ -138,10 +161,13 @@ class VideoProducer:
             raw_clip.write_bytes(clip_bytes)
 
             self.progress(f"镜头 {i}/{n}：规整音画…")
-            norm = work / f"shot_{i:03d}.mp4"
             self._normalize_clip(raw_clip, audio_path, duration, norm)
             normalized.append(norm)
             segments.append((duration, speaker, voiceover))
+
+            # 记录到清单并落盘，崩溃后可从此镜之后续跑
+            manifest[str(i)] = {"duration": duration, "speaker": speaker, "voiceover": voiceover}
+            manifest_path.write_text(json.dumps(manifest, ensure_ascii=False), encoding="utf-8")
 
             if self.consistency == "strong":
                 frame = work / f"frame_{i:03d}.png"

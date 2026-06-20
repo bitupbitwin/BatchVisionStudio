@@ -49,6 +49,7 @@ function lockSteps(lock) {
   // 步骤 2/3 的可用性由各自前置条件决定
   $("step2").disabled = lock || !window.__storyReady;
   $("step3").disabled = lock || state.selected == null;
+  $("stepAll").disabled = lock || !(state.scripts && state.scripts.length);
 }
 
 /* ---------- 状态 / 设置 ---------- */
@@ -228,6 +229,9 @@ async function generate() {
     state.scripts = res.scripts;
     renderScripts(res.scripts);
     if (res.scripts.length) selectScript(res.scripts[0].index);
+    $("stepAll").disabled = false;
+    await showEstimate();
+    await refreshJobs();
     setStatus("status2", `成功 · 共 ${res.scripts.length} 集` + (res.used_model ? "（模型）" : "（本地）"), "ok");
     toast(`已生成 ${res.scripts.length} 个脚本`, "ok");
   });
@@ -308,11 +312,62 @@ async function runScript() {
     if (res.ok) {
       setStatus("status3", "成功", "ok");
       window.onProduceProgress("完成：" + res.video_path);
+      await refreshJobs();
       toast("视频已生成 ✓", "ok");
     } else {
       setStatus("status3", "失败", "err");
       window.onProduceProgress("失败：" + (res.error || "未知错误"));
       toast(res.error || "制作失败", "err");
+    }
+  });
+}
+
+async function showEstimate() {
+  const res = await window.pywebview.api.estimate();
+  const bar = $("estimateBar");
+  if (res.ok) {
+    bar.classList.remove("hidden");
+    bar.textContent =
+      `预估：${res.episodes} 集 · ${res.shots} 个镜头 · ` +
+      `视频生成 ${res.video_calls} 次 / 参考图 ${res.image_calls} 次 / 配音 ${res.tts_calls} 次 · ` +
+      `粗略耗时约 ${res.est_minutes} 分钟（真实视模型排队而定）`;
+  } else {
+    bar.classList.add("hidden");
+  }
+}
+
+async function refreshJobs() {
+  const res = await window.pywebview.api.get_jobs();
+  const eps = (res && res.episodes) || {};
+  document.querySelectorAll(".script-item").forEach((li) => {
+    const st = (eps[li.dataset.index] || {}).status;
+    let badge = li.querySelector(".jobst");
+    if (!badge) {
+      badge = document.createElement("span");
+      badge.className = "jobst";
+      li.appendChild(badge);
+    }
+    const map = { done: ["✓", "done"], failed: ["✗", "failed"], running: ["…", "running"] };
+    const m = map[st];
+    badge.textContent = m ? m[0] : "";
+    badge.className = "jobst" + (m ? " " + m[1] : "");
+  });
+}
+
+async function runAll() {
+  const log = $("produceLog");
+  log.innerHTML = "";
+  log.classList.remove("hidden");
+  await withBusy("stepAll", "statusAll", "批量制作中…", async () => {
+    const res = await window.pywebview.api.run_all();
+    await refreshJobs();
+    if (res.ok) {
+      setStatus("statusAll", `完成 ${res.done} · 跳过 ${res.skipped} · 失败 ${res.failed}`,
+        res.failed ? "err" : "ok");
+      toast(`批量完成：成功 ${res.done}，失败 ${res.failed}`, res.failed ? "info" : "ok");
+    } else {
+      setStatus("statusAll", "失败", "err");
+      toast(res.error || "批量制作失败", "err");
     }
   });
 }
@@ -336,6 +391,7 @@ function bind() {
   $("step1").onclick = arrange;
   $("step2").onclick = generate;
   $("step3").onclick = runScript;
+  $("stepAll").onclick = runAll;
   $("openFolderBtn").onclick = openFolder;
   $("settingsBtn").onclick = openSettings;
   $("statusPill").onclick = openSettings;

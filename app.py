@@ -12,6 +12,7 @@ import sys
 from pathlib import Path
 
 import engine
+from jobs import ProjectJobs
 from engine import (
     ProjectStorage,
     ScriptItem,
@@ -176,30 +177,96 @@ class Api:
         except Exception as exc:
             return {"ok": False, "error": friendly_error(exc)}
 
-    # ---- 步骤 3：执行选中脚本（生成带配音与字幕的视频）----
+    # ---- 预估：开跑前给出调用量与粗略耗时 ----
+    def estimate(self) -> dict:
+        try:
+            if not self.scripts:
+                raise ValueError("请先完成第 2 步：生成脚本")
+            cfg = load_config()
+            shots = sum(len(s.shots) for s in self.scripts)
+            voiced = sum(1 for s in self.scripts for sh in s.shots if (sh.get("voiceover") or "").strip())
+            strong = cfg.get("consistency", "strong") == "strong"
+            images = (len(self.story.get("cast", [])) + len(self.story.get("locations", []))) if strong else 0
+            # 粗略：每段视频按 ~90 秒（生成+轮询）估
+            minutes = round(shots * 1.5)
+            return {
+                "ok": True,
+                "episodes": len(self.scripts),
+                "shots": shots,
+                "video_calls": shots,
+                "image_calls": images,
+                "tts_calls": voiced,
+                "est_minutes": minutes,
+            }
+        except Exception as exc:
+            return {"ok": False, "error": friendly_error(exc)}
+
+    def get_jobs(self) -> dict:
+        if not self.storage.current_dir:
+            return {"episodes": {}}
+        return {"episodes": ProjectJobs(self.storage.current_dir).all()}
+
+    def _make_producer(self):
+        """校验依赖与配置，返回 (producer, error)。"""
+        if not self.story or not self.storage.current_dir:
+            return None, "请先完成第 1、2 步"
+        cfg = load_config()
+        if not cfg.get("xai_api_key"):
+            return None, "请先在「设置」中填写 xAI(Grok) API Key"
+        if not cfg.get("gemini_api_key"):
+            return None, "请先在「设置」中填写 Gemini API Key"
+        from pipeline import VideoProducer, have_ffmpeg
+        if not have_ffmpeg():
+            return None, "未检测到 ffmpeg，请先安装 ffmpeg 后再制作视频"
+        return VideoProducer(cfg, progress=self._progress), None
+
+    def _produce_episode(self, item, producer, jobs):
+        jobs.set(item.index, status="running", title=item.title)
+        final = producer.produce(item, self.story, self.storage.current_dir)
+        self.storage.save_run(item, "success", f"已生成视频：{final}")
+        jobs.set(item.index, status="done", title=item.title, video_path=str(final), error="")
+        return final
+
+    # ---- 步骤 3：制作选中的一集 ----
     def run_script(self, index: int) -> dict:
         try:
             item = next((s for s in self.scripts if s.index == int(index)), None)
             if not item:
                 raise ValueError("请先在脚本列表中选择一个标题")
-            if not self.story or not self.storage.current_dir:
-                raise ValueError("请先完成第 1、2 步")
+            producer, err = self._make_producer()
+            if err:
+                raise ValueError(err)
+            jobs = ProjectJobs(self.storage.current_dir)
+            final = self._produce_episode(item, producer, jobs)
+            return {"ok": True, "video_path": str(final)}
+        except Exception as exc:
+            return {"ok": False, "error": friendly_error(exc)}
 
-            cfg = load_config()
-            if not cfg.get("xai_api_key"):
-                raise ValueError("请先在「设置」中填写 xAI(Grok) API Key")
-            if not cfg.get("gemini_api_key"):
-                raise ValueError("请先在「设置」中填写 Gemini API Key")
-
-            from pipeline import VideoProducer, have_ffmpeg
-
-            if not have_ffmpeg():
-                raise ValueError("未检测到 ffmpeg，请先安装 ffmpeg 后再制作视频")
-
-            producer = VideoProducer(cfg, progress=self._progress)
-            final = producer.produce(item, self.story, self.storage.current_dir)
-            run_path = self.storage.save_run(item, "success", f"已生成视频：{final}")
-            return {"ok": True, "video_path": str(final), "run_path": str(run_path)}
+    # ---- 批量制作全部集（跳过已完成，失败继续，可断点续跑）----
+    def run_all(self) -> dict:
+        try:
+            if not self.scripts:
+                raise ValueError("请先完成第 2 步：生成脚本")
+            producer, err = self._make_producer()
+            if err:
+                raise ValueError(err)
+            jobs = ProjectJobs(self.storage.current_dir)
+            done, failed, skipped = 0, 0, 0
+            total = len(self.scripts)
+            for n, item in enumerate(self.scripts, 1):
+                if jobs.status(item.index) == "done":
+                    skipped += 1
+                    self._progress(f"[{n}/{total}] 第 {item.index} 集已完成，跳过")
+                    continue
+                self._progress(f"[{n}/{total}] 制作第 {item.index} 集：{item.title}")
+                try:
+                    self._produce_episode(item, producer, jobs)
+                    done += 1
+                except Exception as exc:
+                    failed += 1
+                    jobs.set(item.index, status="failed", title=item.title, error=friendly_error(exc))
+                    self._progress(f"  第 {item.index} 集失败：{friendly_error(exc)}（继续下一集）")
+            return {"ok": True, "done": done, "failed": failed, "skipped": skipped, "total": total}
         except Exception as exc:
             return {"ok": False, "error": friendly_error(exc)}
 
