@@ -22,9 +22,12 @@ if errorlevel 1 (
 )
 echo.
 echo ============================================
-echo   打包完成！可执行文件： dist\AutoVideoStudio.exe
+echo   打包完成！程序在： dist\AutoVideoStudio\AutoVideoStudio.exe
 echo.
 echo   重要：视频制作需要 ffmpeg。请把 ffmpeg.exe 和 ffprobe.exe
-echo   放到 dist\ 目录（与 exe 同级），或确保它们已在系统 PATH 中。
+echo   放到 dist\AutoVideoStudio\ 目录（与 AutoVideoStudio.exe 同级），
+echo   或确保它们已在系统 PATH 中。
+echo.
+echo   分发时请把整个 dist\AutoVideoStudio 文件夹一起拷贝。
 echo ============================================
 pause

@@ -35,19 +35,28 @@ a = Analysis(
 )
 pyz = PYZ(a.pure, a.zipped_data, cipher=block_cipher)
 
+# 采用 onedir（文件夹）方式：原生 DLL 以真实文件存在，
+# pywebview 的 WebView2/.NET 后端才能稳定加载（onefile 常因临时解压而加载失败）。
 exe = EXE(
     pyz,
     a.scripts,
-    a.binaries,
-    a.zipfiles,
-    a.datas,
     [],
+    exclude_binaries=True,
     name='AutoVideoStudio',
     debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=False,            # 关闭 UPX，避免杀软误报
-    runtime_tmpdir=None,
-    console=False,        # 无控制台窗口；排查闪退时可临时改为 True 重新打包
+    console=False,        # 无控制台窗口；启动失败会弹窗并写 startup_error.log
     icon='assets/icon.ico',
+)
+
+coll = COLLECT(
+    exe,
+    a.binaries,
+    a.zipfiles,
+    a.datas,
+    strip=False,
+    upx=False,
+    name='AutoVideoStudio',
 )
