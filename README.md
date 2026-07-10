@@ -6,11 +6,12 @@
 
 1. **编排故事**：输入网址或粘贴长文本，生成故事标题、梗概、人物/要素和视频风格，并保存到本地项目文件夹。几万字的长文会**分块通读全文**（模型模式用 map-reduce 归并摘要，本地模式跨全篇采样），不再只看开头。
 2. **生成多个脚本（剧本式）**：编排故事时会产出**角色表 cast**（外貌/性格）与**场景表 locations**；生成脚本时按集拆分为**场景 + 对白节拍**（speaker / line / action / 画面提示词 / 时长），用于多人物对话短剧。每集**标题力求概括且有吸引力**。模型模式产出真正的角色对白；本地模式降级为旁白节拍（仅预览结构）。
-3. **选择标题开始执行 → 生成成片**：选择某个脚本，自动调用 **Grok（xAI）生成视频**、**Gemini（Google）TTS 配音**，并用 ffmpeg 拼接、对齐音频、烧录字幕，输出到项目的 `videos/`。
+3. **选择标题开始执行 → 生成成片**：选择某个脚本，可调用 **xAI/Grok 或 MiniMax/海螺**生成画面，使用 **xAI / Gemini / MiniMax TTS** 配音，并用 ffmpeg 拼接、对齐音频、烧录字幕，输出到项目的 `videos/`。
 
 ### 视频制作能力（第 3 步）
 
-- **真实出片**：逐镜头调用 Grok Imagine 视频生成 + Gemini TTS 配音 + 自动字幕，合成带声音与字幕的 mp4。
+- **真实出片**：逐镜头调用 AI 视频生成 + TTS 配音 + 自动字幕，合成带声音与字幕的 mp4。
+- **省钱模式**：可切换为「AI 图 + 镜头运动」，每个镜头只生成一张关键图，再用 ffmpeg 做轻微推拉/缩放，大幅减少昂贵的视频生成调用，适合批量短视频先跑通产线。
 - **人物/场景一致性（强一致 + 帧衔接 + 资产库）**：为每个角色生成一张**定妆参考图**、每个场景一张**参考图**（存 `assets/characters/`、`assets/scenes/`，项目级缓存、跨集复用，保证几十集人物不崩）。渲染每个镜头时：换说话人/换场景就用该角色定妆图重新锚定身份，同一人同场景内则用上一镜尾帧帧衔接。也可在设置里切到「轻量一致」省成本。
 - **配音（分角色）**：每个角色自动分配固定 Gemini 音色（Kore/Puck/Zephyr…），全剧同一角色同一把声音；逐句按说话人音色配音，并用**音频实际时长驱动该镜时长**，对话节奏自然。
 - **字幕**：按对白分条生成 `.srt` 并**标注说话人**，烧录进画面（同时保留 `.srt` 旁车文件）。
@@ -18,7 +19,7 @@
 - **批量与断点续跑（适合几十集）**：「制作全部集」一键批量；每集状态记于项目 `jobs.json`，**已完成自动跳过**、失败继续下一集；镜头级进度记于 work 清单，**中途崩溃/关掉重开都能从断点续跑**，不重复消耗额度。生成脚本后会显示**调用量与粗略耗时预估**，列表里每集带 ✓/✗/… 状态。
 - **审校与局部重生成**：渲染前可**预览角色/场景参考图**确认画面基准；可**编辑本集**对白/标题（保存后该集自动标记需重做）；可**重做本集**单独重渲染，不必重跑整部剧。
 
-> 依赖：需安装 **ffmpeg**，并在「设置」中填入 **xAI(Grok) API Key** 与 **Gemini API Key**。中文字幕烧录需系统装有中文字体（如 Noto Sans CJK），否则会自动退化为软字幕。
+> 依赖：需安装 **ffmpeg**，并在「设置」中按所选供应商填入 API Key。中文字幕烧录需系统装有中文字体（如 Noto Sans CJK），否则会自动退化为软字幕。
 
 ## 界面亮点
 
@@ -68,16 +69,25 @@ outputs/
 
 不配置 API 时，会用本地规则生成故事和脚本，方便先验证软件流程。
 
-要使用真实大模型，点击界面右上角的 **设置**（或状态标签），填入接口地址、Key、模型名即可（按 OpenAI Chat Completions 兼容格式调用）。也可手动把 `config.example.json` 复制为 `config.json` 填写：
+要使用真实大模型，点击界面右上角的 **设置**（或状态标签），填入接口地址、Key、模型名即可（按 OpenAI Chat Completions 兼容格式调用）。国内低成本文本模型可优先用 DeepSeek：`api_url` 填 `https://api.deepseek.com/chat/completions`，模型可用 `deepseek-v4-flash` 或 `deepseek-v4-pro`。也可手动把 `config.example.json` 复制为 `config.json` 填写：
 
 ```json
 {
   "api_url": "https://你的接口地址/v1/chat/completions",
   "api_key": "你的 API Key",
   "model": "你的模型名",
-  "temperature": 0.7
+  "temperature": 0.7,
+  "video_provider": "xai",
+  "render_mode": "image_motion",
+  "tts_provider": "minimax"
 }
 ```
+
+## 接口诊断
+
+- xAI：设置环境变量 `XAI_API_KEY` 后运行 `python diagnose_xai.py`。
+- MiniMax：设置环境变量 `MINIMAX_API_KEY` 后运行 `python diagnose_minimax.py`；如账号要求 Group ID，再设置 `MINIMAX_GROUP_ID`。
+- 诊断产物会写到 `outputs/diagnostics/`，包含 `report.json`、测试音频和 3 秒测试视频（若视频接口可用）。
 
 ## 打包成免安装 exe
 
@@ -93,7 +103,7 @@ outputs/
 ```text
 app.py        PyWebView 桌面外壳 + JS↔Python 桥接
 engine.py     核心逻辑：故事编排、脚本生成、文本模型调用、配置/主题、项目存储
-providers.py  外部生成式 API 客户端：Grok 视频/图像（xAI）、Gemini TTS（Google）
+providers.py  外部生成式 API 客户端：xAI、Gemini TTS、MiniMax
 pipeline.py   视频制作流水线：强一致帧衔接 + TTS + 字幕 + ffmpeg 合成
 web/          界面层（index.html / style.css / app.js）
 outputs/      生成的项目输出（含 videos/ 成片与 .srt 字幕）
@@ -101,6 +111,6 @@ outputs/      生成的项目输出（含 videos/ 成片与 .srt 字幕）
 
 ## 下一步建议
 
-- 在第 3 步接入视频生成、配音、字幕和合成 API。
+- 接入更多国内供应商：火山/豆包 TTS、可灵视频、阿里百炼视频。
 - 增加项目历史列表，方便打开以前生成过的故事和脚本。
-- 支持脚本逐条编辑与单集重新生成。
+- 增加按镜头选择「视频生成 / 图片运动」的混合模式，把预算集中在关键镜头。

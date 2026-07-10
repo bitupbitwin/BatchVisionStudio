@@ -45,7 +45,10 @@ async function withBusy(btnId, statusId, label, fn) {
 }
 
 function lockSteps(lock) {
-  ["step1", "importBtn", "fetchBtn"].forEach((id) => ($(id).disabled = lock));
+  ["step1", "importBtn", "fetchBtn", "parseScriptBtn"].forEach((id) => {
+    const el = $(id);
+    if (el) el.disabled = lock;
+  });
   // 步骤 2/3 的可用性由各自前置条件决定
   $("step2").disabled = lock || !window.__storyReady;
   $("step3").disabled = lock || state.selected == null;
@@ -131,10 +134,23 @@ async function saveSettings() {
 function setMode(mode) {
   state.mode = mode;
   document.querySelectorAll(".seg-btn").forEach((b) => b.classList.toggle("active", b.dataset.mode === mode));
-  $("fetchBtn").classList.toggle("hidden", mode !== "url");
-  $("input").placeholder = mode === "url"
-    ? "输入网址，例如 https://example.com/article"
-    : "在这里粘贴长文本/小说，或切换到「网址」模式输入链接…";
+  const fetchBtn = $("fetchBtn");
+  if (fetchBtn) fetchBtn.classList.toggle("hidden", mode !== "url");
+  const parseBtn = $("parseScriptBtn");
+  if (parseBtn) parseBtn.classList.toggle("hidden", mode !== "script");
+  const importBtn = $("importBtn");
+  if (importBtn) importBtn.classList.toggle("hidden", mode === "url" || mode === "script");
+  
+  const inputEl = $("input");
+  if (inputEl) {
+    if (mode === "url") {
+      inputEl.placeholder = "输入网址，例如 https://example.com/article";
+    } else if (mode === "script") {
+      inputEl.placeholder = "在此粘贴由 AI 产生的多集 JSON 脚本（集数数组，包含 index, title, summary, scenes 等字段）…";
+    } else {
+      inputEl.placeholder = "在这里粘贴长文本/小说，或切换到「网址」模式输入链接…";
+    }
+  }
 }
 
 function updateCharCount() {
@@ -169,8 +185,46 @@ async function fetchPreview() {
   });
 }
 
-/* ---------- 步骤 1 ---------- */
+async function parseScriptInput() {
+  const rawInput = $("input").value.trim();
+  if (!rawInput) {
+    toast("请先粘贴脚本提示词 JSON", "info");
+    return;
+  }
+  await withBusy("parseScriptBtn", "status2", "解析脚本中…", async () => {
+    const res = await window.pywebview.api.import_parsed_scripts(rawInput);
+    if (!res.ok) {
+      setStatus("status2", "解析失败", "err");
+      toast(res.error || "解析脚本失败，请检查 JSON 格式", "err");
+      return;
+    }
+    state.story = res.story;
+    state.scripts = res.scripts;
+    renderStory(res.story);
+    renderScripts(res.scripts);
+    if (res.scripts.length) {
+      selectScript(res.scripts[0].index);
+    }
+    $("projectPath").textContent = "项目：" + res.project_dir;
+    $("openFolderBtn").disabled = false;
+    window.__storyReady = true;
+    $("step2").disabled = false;
+    $("stepAll").disabled = false;
+    setStatus("status1", "导入脚本成功", "ok");
+    setStatus("status2", `成功 · 共 ${res.scripts.length} 集`, "ok");
+    setStatus("status3", "未开始");
+    await showEstimate();
+    await refreshJobs();
+    toast(`成功导入并解析 ${res.scripts.length} 个脚本`, "ok");
+  });
+}
+
+/* ---------- Step 1 ---------- */
 async function arrange() {
+  if (state.mode === "script") {
+    toast("当前是「粘贴脚本提示词」模式，请点击「脚本分类」按钮导入", "info");
+    return;
+  }
   await withBusy("step1", "status1", "编排中…", async () => {
     const res = await window.pywebview.api.arrange($("input").value, state.mode);
     if (!res.ok) {
@@ -466,6 +520,8 @@ function bind() {
   $("input").addEventListener("input", updateCharCount);
   $("importBtn").onclick = importTxt;
   $("fetchBtn").onclick = fetchPreview;
+  const parseBtn = $("parseScriptBtn");
+  if (parseBtn) parseBtn.onclick = parseScriptInput;
   $("step1").onclick = arrange;
   $("step2").onclick = generate;
   $("step3").onclick = runScript;

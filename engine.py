@@ -233,8 +233,12 @@ def load_config() -> dict:
 # 可保存的配置项；新增 Grok 视频与 Gemini TTS 相关字段
 CONFIG_STR_KEYS = (
     "api_url", "api_key", "model",
+    "video_provider", "render_mode",
     "xai_api_key", "xai_video_model", "xai_image_model",
+    "tts_provider", "xai_tts_voice", "xai_tts_language",
     "gemini_api_key", "gemini_tts_model", "gemini_voice",
+    "minimax_api_key", "minimax_group_id", "minimax_base_url",
+    "minimax_video_model", "minimax_tts_model", "minimax_tts_voice",
     "video_aspect_ratio", "video_resolution", "consistency",
 )
 
@@ -315,16 +319,23 @@ class ModelClient:
 class StoryEngine:
     def __init__(self):
         self.model = ModelClient()
+        self.last_used_model = False
+        self.last_model_error = ""
 
     def arrange_story(self, text: str) -> dict:
         text = compact_text(text)
+        self.last_used_model = False
+        self.last_model_error = ""
         story = None
         if self.model.available():
             try:
                 story = self._arrange_with_model(text)
                 if not isinstance(story, dict):
                     story = None
-            except Exception:
+                else:
+                    self.last_used_model = True
+            except Exception as exc:
+                self.last_model_error = str(exc)
                 story = None
         if story is None:
             story = self._arrange_locally(text)
@@ -400,7 +411,7 @@ class StoryEngine:
         title = self._guess_title(text)
         sentences = self._sentences(text)
         outline = self._coverage_digest(sentences, 3000) if sentences else text[:1200]
-        keywords = self._keywords(text)
+        keywords = self._keywords(" ".join(sentences) or text)
         return {
             "title": title,
             "outline": outline,
@@ -434,11 +445,15 @@ class StoryEngine:
 
     def generate_scripts(self, story: dict, source_text: str, seconds_per_video: int = 60,
                          target_count: int = 0) -> list[ScriptItem]:
+        self.last_used_model = False
+        self.last_model_error = ""
         if self.model.available():
             try:
-                return self._scripts_with_model(story, source_text, seconds_per_video, target_count)
-            except Exception:
-                pass
+                scripts = self._scripts_with_model(story, source_text, seconds_per_video, target_count)
+                self.last_used_model = True
+                return scripts
+            except Exception as exc:
+                self.last_model_error = str(exc)
         return self._scripts_locally(story, source_text, seconds_per_video, target_count)
 
     def _scripts_with_model(self, story: dict, source_text: str, seconds_per_video: int,
@@ -613,27 +628,42 @@ class StoryEngine:
         return "\n".join(lines)
 
     def _build_shots(self, chunk: list[str], seconds_per_video: int) -> list[dict]:
-        shot_count = min(8, max(4, math.ceil(len(chunk) / 2)))
-        duration = max(5, seconds_per_video // shot_count)
+        shot_count = min(8, max(3, len(chunk)))
+        duration = max(3, seconds_per_video // shot_count)
         shots = []
         for i in range(shot_count):
-            sentence = chunk[min(i * 2, len(chunk) - 1)]
+            sentence = chunk[min(i, len(chunk) - 1)]
             shots.append(
                 {
                     "duration": duration,
-                    "visual_prompt": (
-                        f"电影感短视频画面，第 {i + 1} 镜，围绕“{sentence[:80]}”展开；"
-                        "真实细节，清晰主体，情绪明确，适合 AI 视频生成。"
-                    ),
+                    "visual_prompt": self._visual_from_sentence(sentence, i + 1),
                     "voiceover": sentence,
+                    "speaker": self._speaker_from_sentence(sentence),
+                    "action": self._action_from_sentence(sentence),
                 }
             )
         return shots
 
     def _guess_title(self, text: str) -> str:
-        first = next((line.strip() for line in text.splitlines() if line.strip()), "")
-        first = re.sub(r"^[#\s\d.、-]+", "", first)
-        return first[:28] or "自动视频项目"
+        for raw in text.splitlines():
+            line = raw.strip()
+            m = re.match(r"^#{1,3}\s*(.{2,40})\s*$", line)
+            if m:
+                title = self._clean_title_candidate(m.group(1))
+                if title:
+                    return title
+        for line in self._content_lines(text, keep_headings=False):
+            title = self._clean_title_candidate(line)
+            if title and len(title) <= 18:
+                return title
+        sentences = self._sentences(text)
+        if sentences:
+            clauses = [c.strip() for c in re.split(r"[，。！？；：,.!?;:]", sentences[0]) if c.strip()]
+            for clause in clauses:
+                title = self._clean_title_candidate(clause)
+                if title:
+                    return title[:18]
+        return "自动视频项目"
 
     def _episode_title(self, chunk: list[str], idx: int, fallback: str) -> str:
         """挑选信息量最大的句子作为核心，提炼成有概括性的本集标题。"""
@@ -660,8 +690,80 @@ class StoryEngine:
         return f"第 {idx} 集 · {phrase}"
 
     def _sentences(self, text: str) -> list[str]:
-        parts = re.split(r"(?<=[。！？!?；;])\s*|\n+", compact_text(text))
-        return [part.strip() for part in parts if len(part.strip()) > 8]
+        cleaned = "\n".join(self._content_lines(text, keep_headings=False))
+        parts = re.split(r"(?<=[。！？!?；;])\s*|\n+", compact_text(cleaned))
+        result = []
+        for part in parts:
+            value = self._clean_sentence(part)
+            if len(value) > 8:
+                result.append(value)
+        return result
+
+    def _content_lines(self, text: str, keep_headings: bool = False) -> list[str]:
+        lines = []
+        for raw in compact_text(text).splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            if not keep_headings and re.match(r"^#{1,6}\s*\S+", line):
+                continue
+            line = re.sub(r"https?://\S+", "", line).strip()
+            line = re.sub(r"\[[^\]]{1,30}\]\s*$", "", line).strip()
+            if not line or self._is_meta_line(line):
+                continue
+            lines.append(line)
+        return lines
+
+    def _is_meta_line(self, line: str) -> bool:
+        if re.search(r"https?://|www\.|newsDetail|转自|来源[:：]", line, re.I):
+            return True
+        meta_patterns = (
+            "下面这篇小说", "以20", "背景创作", "根据当时预报", "文中的人物",
+            "地点与事件", "均为虚构", "防台动态",
+        )
+        return any(p in line for p in meta_patterns)
+
+    def _clean_sentence(self, text: str) -> str:
+        text = re.sub(r"https?://\S+", "", str(text))
+        text = re.sub(r"^[#\s\d.、-]+", "", text).strip()
+        return text
+
+    def _clean_title_candidate(self, text: str) -> str:
+        title = self._clean_sentence(text)
+        title = re.sub(r"[《》“”\"'，。！？；：,.!?;:]+$", "", title).strip()
+        if not title or self._is_meta_line(title):
+            return ""
+        if len(title) > 40:
+            return ""
+        return title[:28]
+
+    def _speaker_from_sentence(self, sentence: str) -> str:
+        if re.match(r"^[“\"']", sentence.strip()):
+            return "群消息"
+        if "群里" in sentence or "消息" in sentence or "通知" in sentence:
+            return "旁白"
+        return "旁白"
+
+    def _action_from_sentence(self, sentence: str) -> str:
+        if any(k in sentence for k in ("台风", "风", "云层", "暴雨", "风雨")):
+            return "城市风雨压境，人物神情紧张"
+        if any(k in sentence for k in ("群", "消息", "通知", "转发", "问")):
+            return "手机屏幕亮起，群消息连续弹出"
+        if any(k in sentence for k in ("地下车库", "车库", "车辆", "停车")):
+            return "居民焦急查看车库和车辆情况"
+        return "镜头跟随事件推进，突出人物情绪"
+
+    def _visual_from_sentence(self, sentence: str, index: int) -> str:
+        base = sentence[:90]
+        if any(k in sentence for k in ("台风", "风", "云层", "天气", "东海")):
+            scene = "上海城市上空阴云低压，街道闷热空旷，台风来临前的压迫感"
+        elif any(k in sentence for k in ("群", "消息", "通知", "转发")):
+            scene = "居民家中近景，手机微信群消息不断弹出，屏幕冷光映在焦虑的脸上"
+        elif any(k in sentence for k in ("地下车库", "车库", "车辆", "停车")):
+            scene = "小区地下车库入口，防汛沙袋和积水隐患，车主匆忙转移车辆"
+        else:
+            scene = "现实主义短剧画面，上海小区与居民生活细节，情绪紧张但克制"
+        return f"{scene}；第 {index} 镜重点：{base}；清晰主体，真实光影，适合竖屏短视频。"
 
     def _keywords(self, text: str) -> list[str]:
         candidates = re.findall(r"[一-龥A-Za-z0-9]{2,12}", text)

@@ -134,6 +134,102 @@ class Api:
         except Exception as exc:
             return {"ok": False, "error": friendly_error(exc)}
 
+    def import_parsed_scripts(self, raw_json: str) -> dict:
+        try:
+            raw_json = (raw_json or "").strip()
+            if not raw_json:
+                raise ValueError("请先粘贴脚本提示词 JSON")
+
+            try:
+                data = json.loads(raw_json)
+            except json.JSONDecodeError as exc:
+                raise ValueError(f"JSON format error: {exc}")
+
+            if isinstance(data, dict):
+                data = data.get("scripts") or data.get("episodes") or data.get("data") or [data]
+
+            if not isinstance(data, list) or not data:
+                raise ValueError("JSON must be a non-empty list of episodes")
+
+            unique_characters = set()
+            unique_locations = set()
+            first_title = ""
+
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                if not first_title:
+                    first_title = str(item.get("title") or "")
+                
+                scenes = item.get("scenes", [])
+                if isinstance(scenes, list):
+                    for sc in scenes:
+                        if isinstance(sc, dict):
+                            loc = sc.get("location")
+                            if loc:
+                                unique_locations.add(str(loc))
+                            for b in sc.get("beats", []):
+                                if isinstance(b, dict):
+                                    speaker = b.get("speaker")
+                                    if speaker and speaker != "旁白":
+                                        unique_characters.add(str(speaker))
+
+            if not first_title:
+                first_title = "Imported Script Project"
+
+            raw_story = {
+                "title": first_title,
+                "outline": "Project created by importing external script JSON.",
+                "characters": "、".join(sorted(list(unique_characters))),
+                "style": "Cinematic visual style, clear subject, clear emotion.",
+                "cast": [{"name": name, "appearance": "appearance description", "persona": "personality description", "voice": ""} for name in sorted(list(unique_characters))],
+                "locations": [{"name": loc, "description": "location visual details"} for loc in sorted(list(unique_locations))]
+            }
+
+            self.story = self.engine._normalize_story(raw_story)
+
+            project_dir = self.storage.create_story_project(
+                self.story["title"], "script_json", raw_json
+            )
+            self.storage.save_story(self.story)
+
+            self.scripts = []
+            for item in data:
+                if not isinstance(item, dict):
+                    continue
+                idx = len(self.scripts) + 1
+                scenes = self.engine._normalize_scenes(item.get("scenes", []), 60)
+                shots = self.engine._scenes_to_shots(scenes, 60)
+                if not shots:
+                    shots = self.engine._normalize_shots(item.get("shots", []), 60)
+                    scenes = self.engine._shots_to_scenes(shots)
+                narration = "\n".join(s["voiceover"] for s in shots if s.get("voiceover"))
+
+                self.scripts.append(
+                    ScriptItem(
+                        index=idx,
+                        title=str(item.get("title") or f"Episode {idx}"),
+                        summary=str(item.get("summary", "")),
+                        narration=str(item.get("narration") or narration),
+                        shots=shots,
+                        scenes=scenes,
+                    )
+                )
+
+            if not self.scripts:
+                raise ValueError("No valid scripts parsed from JSON")
+
+            self.storage.save_scripts(self.scripts)
+
+            return {
+                "ok": True,
+                "story": self.story,
+                "scripts": [s.to_dict() for s in self.scripts],
+                "project_dir": str(project_dir),
+            }
+        except Exception as exc:
+            return {"ok": False, "error": friendly_error(exc)}
+
     # ---- 步骤 1：编排故事 ----
     def arrange(self, raw_input: str, mode: str) -> dict:
         try:

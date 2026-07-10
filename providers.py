@@ -1,4 +1,4 @@
-"""外部生成式 API 客户端：Grok 视频/图像（xAI）、Gemini TTS（Google）。
+"""外部生成式 API 客户端：Grok 视频/图像（xAI）、Gemini TTS（Google）、MiniMax。
 
 仅依赖标准库 urllib。所有响应解析都做了多形态兜底，因为各家字段可能随版本微调；
 若某家返回结构与此处不符，改动集中在本文件即可。
@@ -8,6 +8,7 @@ import base64
 import json
 import re
 import time
+import urllib.parse
 import urllib.request
 
 
@@ -16,6 +17,13 @@ def _post_json(url: str, headers: dict, payload: dict, timeout: int = 120) -> di
     req = urllib.request.Request(url, data=data, headers={**headers, "Content-Type": "application/json"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read().decode("utf-8"))
+
+
+def _post_bytes(url: str, headers: dict, payload: dict, timeout: int = 120) -> bytes:
+    data = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(url, data=data, headers={**headers, "Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read()
 
 
 def _get_json(url: str, headers: dict, timeout: int = 60) -> dict:
@@ -28,6 +36,12 @@ def _download_bytes(url: str, timeout: int = 120) -> bytes:
     if url.startswith("data:"):
         return base64.b64decode(url.split(",", 1)[1])
     req = urllib.request.Request(url, headers={"User-Agent": "VideoAutoStudio/0.3"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read()
+
+
+def _get_bytes(url: str, headers: dict | None = None, timeout: int = 120) -> bytes:
+    req = urllib.request.Request(url, headers=headers or {})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         return resp.read()
 
@@ -126,8 +140,9 @@ class GeminiTTSClient:
     """Google Gemini 文本转语音，返回 WAV 字节。"""
 
     BASE = "https://generativelanguage.googleapis.com/v1beta"
+    audio_ext = "wav"
 
-    def __init__(self, api_key: str, model: str = "gemini-2.5-flash-preview-tts", voice: str = "Kore"):
+    def __init__(self, api_key: str, model: str = "gemini-3.1-flash-tts-preview", voice: str = "Kore"):
         self.api_key = api_key
         self.model = model
         self.voice = voice
@@ -160,6 +175,179 @@ class GeminiTTSClient:
         rate_match = re.search(r"rate=(\d+)", mime)
         rate = int(rate_match.group(1)) if rate_match else 24000
         return pcm16_to_wav(pcm, rate)
+
+
+class XAITTSClient:
+    """xAI 文本转语音，返回 MP3 字节。"""
+
+    BASE = "https://api.x.ai/v1"
+    audio_ext = "mp3"
+
+    def __init__(self, api_key: str, voice: str = "eve", language: str = "zh"):
+        if not api_key:
+            raise RuntimeError("未配置 xAI API Key")
+        self.api_key = api_key
+        self.voice = voice or "eve"
+        self.language = language or "zh"
+
+    def synthesize(self, text: str, voice: str | None = None, timeout: int = 120) -> bytes:
+        payload = {
+            "text": text,
+            "voice_id": voice or self.voice,
+            "language": self.language,
+            "output_format": {
+                "codec": "mp3",
+                "sample_rate": 44100,
+                "bit_rate": 128000,
+            },
+        }
+        return _post_bytes(
+            f"{self.BASE}/tts",
+            {"Authorization": f"Bearer {self.api_key}"},
+            payload,
+            timeout=timeout,
+        )
+
+
+class MiniMaxTTSClient:
+    """MiniMax 同步语音合成，默认兼容 t2a_v2 形态，返回 MP3 字节。"""
+
+    audio_ext = "mp3"
+
+    def __init__(
+        self,
+        api_key: str,
+        group_id: str = "",
+        model: str = "speech-02-hd",
+        voice: str = "Chinese (Mandarin)_Warm_Girl",
+        base_url: str = "https://api.minimax.chat/v1",
+    ):
+        if not api_key:
+            raise RuntimeError("未配置 MiniMax API Key")
+        self.api_key = api_key
+        self.group_id = group_id
+        self.model = model or "speech-02-hd"
+        self.voice = voice or "Chinese (Mandarin)_Warm_Girl"
+        self.base_url = (base_url or "https://api.minimax.chat/v1").rstrip("/")
+
+    def _headers(self) -> dict:
+        return {"Authorization": f"Bearer {self.api_key}"}
+
+    def synthesize(self, text: str, voice: str | None = None, timeout: int = 120) -> bytes:
+        query = f"?GroupId={urllib.parse.quote(self.group_id)}" if self.group_id else ""
+        payload = {
+            "model": self.model,
+            "text": text,
+            "stream": False,
+            "voice_setting": {
+                "voice_id": voice or self.voice,
+                "speed": 1,
+                "vol": 1,
+                "pitch": 0,
+            },
+            "audio_setting": {
+                "sample_rate": 32000,
+                "bitrate": 128000,
+                "format": "mp3",
+                "channel": 1,
+            },
+        }
+        resp = _post_json(f"{self.base_url}/t2a_v2{query}", self._headers(), payload, timeout=timeout)
+        audio = _dig(resp, ["data", "audio"], ["audio"])
+        if not audio:
+            raise RuntimeError(f"MiniMax TTS 返回异常：{json.dumps(resp, ensure_ascii=False)[:500]}")
+        if isinstance(audio, str):
+            try:
+                return bytes.fromhex(audio)
+            except ValueError:
+                return base64.b64decode(audio)
+        raise RuntimeError(f"MiniMax TTS 音频字段格式异常：{type(audio).__name__}")
+
+
+class MiniMaxVideoClient:
+    """MiniMax/Hailuo 文生视频客户端，默认兼容 video_generation 任务形态。"""
+
+    def __init__(
+        self,
+        api_key: str,
+        model: str = "MiniMax-Hailuo-02",
+        base_url: str = "https://api.minimax.chat/v1",
+    ):
+        if not api_key:
+            raise RuntimeError("未配置 MiniMax API Key")
+        self.api_key = api_key
+        self.model = model or "MiniMax-Hailuo-02"
+        self.base_url = (base_url or "https://api.minimax.chat/v1").rstrip("/")
+
+    def _headers(self) -> dict:
+        return {"Authorization": f"Bearer {self.api_key}"}
+
+    def generate_image(self, prompt: str, timeout: int = 180) -> bytes:
+        payload = {
+            "model": "image-01",
+            "prompt": prompt,
+            "aspect_ratio": "9:16",
+            "response_format": "url",
+            "n": 1,
+        }
+        resp = _post_json(f"{self.base_url}/image_generation", self._headers(), payload, timeout=timeout)
+        url = _dig(resp, ["data", "image_urls", 0], ["data", 0, "url"], ["image_url"], ["url"])
+        if url:
+            return _download_bytes(url)
+        b64 = _dig(resp, ["data", 0, "b64_json"], ["b64_json"])
+        if b64:
+            return base64.b64decode(b64)
+        raise RuntimeError(f"MiniMax 图像生成返回异常：{json.dumps(resp, ensure_ascii=False)[:500]}")
+
+    def generate_video(
+        self,
+        prompt: str,
+        image_bytes: bytes | None = None,
+        duration: int = 6,
+        aspect_ratio: str = "9:16",
+        resolution: str = "720p",
+        poll_interval: int = 5,
+        timeout: int = 900,
+    ) -> bytes:
+        if image_bytes:
+            raise RuntimeError("MiniMax 视频客户端当前仅接入文生视频；图生视频需要按官方最新上传文件接口补齐。")
+        payload = {
+            "model": self.model,
+            "prompt": prompt,
+            "duration": int(duration),
+            "aspect_ratio": aspect_ratio,
+            "resolution": resolution,
+        }
+        start = _post_json(f"{self.base_url}/video_generation", self._headers(), payload, timeout=120)
+        direct = _dig(start, ["url"], ["video", "url"], ["data", 0, "url"])
+        if direct:
+            return _download_bytes(direct)
+        task_id = _dig(start, ["task_id"], ["id"], ["data", "task_id"])
+        if not task_id:
+            raise RuntimeError(f"MiniMax 视频生成未返回 task_id：{json.dumps(start, ensure_ascii=False)[:500]}")
+
+        deadline = time.time() + timeout
+        last = None
+        while time.time() < deadline:
+            last = _get_json(f"{self.base_url}/query/video_generation?task_id={urllib.parse.quote(str(task_id))}",
+                             self._headers(), timeout=60)
+            status = str(_dig(last, ["status"], ["data", "status"]) or "").lower()
+            if status in {"success", "succeeded", "done", "completed"}:
+                url = _dig(last, ["file", "download_url"], ["video", "url"], ["url"], ["data", "url"])
+                if url:
+                    return _download_bytes(url)
+                file_id = _dig(last, ["file_id"], ["data", "file_id"], ["data", "video_file_id"])
+                if file_id:
+                    return _get_bytes(
+                        f"{self.base_url}/files/retrieve?file_id={urllib.parse.quote(str(file_id))}",
+                        self._headers(),
+                        timeout=180,
+                    )
+                raise RuntimeError(f"MiniMax 视频已完成但未找到下载地址：{json.dumps(last, ensure_ascii=False)[:500]}")
+            if status in {"failed", "error", "fail", "canceled", "cancelled"}:
+                raise RuntimeError(f"MiniMax 视频生成失败：{json.dumps(last, ensure_ascii=False)[:500]}")
+            time.sleep(poll_interval)
+        raise RuntimeError(f"MiniMax 视频生成超时：{json.dumps(last or {}, ensure_ascii=False)[:500]}")
 
 
 def pcm16_to_wav(pcm: bytes, sample_rate: int, channels: int = 1) -> bytes:

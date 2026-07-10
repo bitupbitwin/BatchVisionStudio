@@ -2,9 +2,9 @@
 
 强一致策略：先用 Grok 生成一张角色/场景参考图，每个镜头用「图生视频」从参考图出发，
 并把上一镜的尾帧作为下一镜的首帧，实现人物/场景的连贯与连续。
-配音用 Gemini TTS，字幕由旁白与时长生成，最后用 ffmpeg 拼接、对齐音频并烧录字幕。
+配音可用 xAI TTS 或 Gemini TTS，字幕由旁白与时长生成，最后用 ffmpeg 拼接、对齐音频并烧录字幕。
 
-注：本模块依赖外部 API Key（xAI / Gemini）与系统 ffmpeg；真实产出需在配置 Key 后运行。
+注：本模块依赖外部 API Key 与系统 ffmpeg；真实产出需在配置 Key 后运行。
 """
 
 import json
@@ -16,7 +16,7 @@ import sys
 from pathlib import Path
 
 from engine import safe_name
-from providers import GeminiTTSClient, GrokClient
+from providers import GeminiTTSClient, GrokClient, MiniMaxTTSClient, MiniMaxVideoClient, XAITTSClient
 
 GROK_MAX_DURATION = 10  # Grok Imagine 单段约 10 秒上限
 
@@ -25,9 +25,9 @@ def _tool(name: str) -> str:
     """定位 ffmpeg/ffprobe：优先程序(exe)同目录，其次系统 PATH。"""
     exe = name + (".exe" if os.name == "nt" else "")
     here = Path(sys.executable).resolve().parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
-    local = here / exe
-    if local.exists():
-        return str(local)
+    for local in (here / exe, here / "dist" / exe, here / "dist" / "AutoVideoStudio" / exe):
+        if local.exists():
+            return str(local)
     return shutil.which(name) or name
 
 
@@ -78,16 +78,46 @@ class VideoProducer:
         self.consistency = config.get("consistency", "strong")
         self.aspect = config.get("video_aspect_ratio", "9:16")
         self.resolution = config.get("video_resolution", "720p")
-        self.grok = GrokClient(
-            config.get("xai_api_key", ""),
-            config.get("xai_video_model", "grok-imagine-video"),
-            config.get("xai_image_model", "grok-2-image"),
-        )
-        self.tts = GeminiTTSClient(
-            config.get("gemini_api_key", ""),
-            config.get("gemini_tts_model", "gemini-2.5-flash-preview-tts"),
-            config.get("gemini_voice", "Kore"),
-        )
+        self.render_mode = config.get("render_mode", "video") or "video"
+        self.video_provider = config.get("video_provider", "xai") or "xai"
+        if self.video_provider == "minimax":
+            self.media = MiniMaxVideoClient(
+                config.get("minimax_api_key", ""),
+                config.get("minimax_video_model", "MiniMax-Hailuo-02"),
+                config.get("minimax_base_url", "https://api.minimax.chat/v1"),
+            )
+        else:
+            self.video_provider = "xai"
+            self.media = GrokClient(
+                config.get("xai_api_key", ""),
+                config.get("xai_video_model", "grok-imagine-video"),
+                config.get("xai_image_model", "grok-2-image"),
+            )
+        self.tts_provider = config.get("tts_provider") or ("gemini" if config.get("gemini_api_key") else "xai")
+        if self.tts_provider == "gemini":
+            self.tts = GeminiTTSClient(
+                config.get("gemini_api_key", ""),
+                config.get("gemini_tts_model", "gemini-3.1-flash-tts-preview"),
+                config.get("gemini_voice", "Kore"),
+            )
+            self.default_voice = config.get("gemini_voice", "Kore")
+        elif self.tts_provider == "minimax":
+            self.tts = MiniMaxTTSClient(
+                config.get("minimax_api_key", ""),
+                config.get("minimax_group_id", ""),
+                config.get("minimax_tts_model", "speech-02-hd"),
+                config.get("minimax_tts_voice", "Chinese (Mandarin)_Warm_Girl"),
+                config.get("minimax_base_url", "https://api.minimax.chat/v1"),
+            )
+            self.default_voice = config.get("minimax_tts_voice", "Chinese (Mandarin)_Warm_Girl")
+        else:
+            self.tts_provider = "xai"
+            self.tts = XAITTSClient(
+                config.get("xai_api_key", ""),
+                config.get("xai_tts_voice", "eve"),
+                config.get("xai_tts_language", "zh"),
+            )
+            self.default_voice = config.get("xai_tts_voice", "eve")
         self.dims = _target_dims(self.aspect, self.resolution)
 
     # ---------- 对外入口 ----------
@@ -111,7 +141,7 @@ class VideoProducer:
 
         prefix = self._consistency_prefix(story)
         voice_map = {c.get("name", ""): c.get("voice", "") for c in story.get("cast", []) if c.get("name")}
-        default_voice = self.cfg.get("gemini_voice", "Kore")
+        default_voice = self.default_voice
         normalized, segments = [], []
         prev_frame, prev_speaker, prev_location = None, None, None
 
@@ -147,10 +177,10 @@ class VideoProducer:
             audio_path = None
             if voiceover:
                 self.progress(f"镜头 {i}/{n}：配音（{speaker or '旁白'}）…")
-                voice = voice_map.get(speaker) or default_voice
-                wav = self.tts.synthesize(voiceover, voice=voice)
-                audio_path = work / f"shot_{i:03d}.wav"
-                audio_path.write_bytes(wav)
+                voice = (voice_map.get(speaker) if self.tts_provider == "gemini" else "") or default_voice
+                audio_bytes = self.tts.synthesize(voiceover, voice=voice)
+                audio_path = work / f"shot_{i:03d}.{self.tts.audio_ext}"
+                audio_path.write_bytes(audio_bytes)
                 audio_dur = self._media_duration(audio_path)
                 duration = max(2, min(GROK_MAX_DURATION, int(math.ceil(audio_dur)) if audio_dur else 4))
             else:
@@ -166,16 +196,28 @@ class VideoProducer:
                     anchor = prev_frame  # 同一人同场景内：用上一镜尾帧做连续衔接
             image_bytes = anchor.read_bytes() if (anchor and anchor.exists()) else None
 
-            self.progress(f"镜头 {i}/{n}：生成视频…")
             prompt = f"{prefix} 本镜画面：{shot.get('visual_prompt', '')}"
-            clip_bytes = self.grok.generate_video(
-                prompt, image_bytes, duration, self.aspect, self.resolution
-            )
-            raw_clip = work / f"shot_{i:03d}_raw.mp4"
-            raw_clip.write_bytes(clip_bytes)
+            if self.render_mode == "image_motion":
+                self.progress(f"镜头 {i}/{n}：生成关键画面…")
+                still = work / f"shot_{i:03d}.png"
+                if not still.exists() or still.stat().st_size <= 0:
+                    still.write_bytes(self.media.generate_image(prompt))
+                self.progress(f"镜头 {i}/{n}：生成镜头运动…")
+                self._image_motion_clip(still, audio_path, duration, norm, i)
+            else:
+                self.progress(f"镜头 {i}/{n}：生成视频…")
+                clip_bytes = self.media.generate_video(
+                    prompt,
+                    image_bytes if self.video_provider == "xai" else None,
+                    duration,
+                    self.aspect,
+                    self.resolution,
+                )
+                raw_clip = work / f"shot_{i:03d}_raw.mp4"
+                raw_clip.write_bytes(clip_bytes)
 
-            self.progress(f"镜头 {i}/{n}：规整音画…")
-            self._normalize_clip(raw_clip, audio_path, duration, norm)
+                self.progress(f"镜头 {i}/{n}：规整音画…")
+                self._normalize_clip(raw_clip, audio_path, duration, norm)
             normalized.append(norm)
             segments.append((duration, speaker, voiceover))
 
@@ -208,7 +250,7 @@ class VideoProducer:
         if not ref.exists():
             self.progress("生成统一的角色/场景参考图…")
             ref.parent.mkdir(parents=True, exist_ok=True)
-            ref.write_bytes(self.grok.generate_image(self._reference_prompt(story)))
+            ref.write_bytes(self.media.generate_image(self._reference_prompt(story)))
         return ref
 
     def _ensure_character_refs(self, story: dict, out_dir: Path) -> dict:
@@ -224,7 +266,7 @@ class VideoProducer:
             if not path.exists():
                 self.progress(f"生成角色定妆图：{name}…")
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(self.grok.generate_image(self._character_prompt(c, story)))
+                path.write_bytes(self.media.generate_image(self._character_prompt(c, story)))
             refs[name] = path
         return refs
 
@@ -240,7 +282,7 @@ class VideoProducer:
             if not path.exists():
                 self.progress(f"生成场景参考图：{name}…")
                 path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_bytes(self.grok.generate_image(self._scene_prompt(loc, story)))
+                path.write_bytes(self.media.generate_image(self._scene_prompt(loc, story)))
             refs[name] = path
         return refs
 
@@ -291,6 +333,33 @@ class VideoProducer:
         else:
             self._run([
                 "-i", str(src),
+                "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
+                "-filter_complex", f"[0:v]{vf}[v]",
+                "-map", "[v]", "-map", "1:a", "-t", str(duration),
+                "-c:v", "libx264", "-c:a", "aac", "-ar", "44100", "-ac", "2", str(out),
+            ])
+
+    def _image_motion_clip(self, image: Path, audio: Path | None, duration: int, out: Path, index: int) -> None:
+        """把单张关键图做成轻微推拉镜头，用于低成本批量生产。"""
+        w, h = self.dims
+        frames = max(30, int(duration * 30))
+        # 交替轻微放大/缩小感，避免连续镜头完全静止。
+        zoom = "min(zoom+0.0008,1.10)" if index % 2 else "max(1.10-on/{}*0.10,1.0)".format(frames)
+        vf = (
+            f"scale={w}:{h}:force_original_aspect_ratio=increase,"
+            f"crop={w}:{h},zoompan=z='{zoom}':d={frames}:s={w}x{h}:fps=30,"
+            "format=yuv420p"
+        )
+        if audio:
+            self._run([
+                "-loop", "1", "-i", str(image), "-i", str(audio),
+                "-filter_complex", f"[0:v]{vf}[v];[1:a]apad[a]",
+                "-map", "[v]", "-map", "[a]", "-t", str(duration),
+                "-c:v", "libx264", "-c:a", "aac", "-ar", "44100", "-ac", "2", str(out),
+            ])
+        else:
+            self._run([
+                "-loop", "1", "-i", str(image),
                 "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=44100",
                 "-filter_complex", f"[0:v]{vf}[v]",
                 "-map", "[v]", "-map", "1:a", "-t", str(duration),

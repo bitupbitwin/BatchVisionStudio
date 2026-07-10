@@ -14,12 +14,24 @@ if errorlevel 1 (
 )
 echo.
 echo [2/2] 开始打包...
+set "DIST_DIR=dist\AutoVideoStudio"
+set "TMP_TOOLS=build\_bundled_tools"
+if exist "%DIST_DIR%\ffmpeg.exe" (
+  if not exist "%TMP_TOOLS%" mkdir "%TMP_TOOLS%"
+  copy /Y "%DIST_DIR%\ffmpeg.exe" "%TMP_TOOLS%\ffmpeg.exe" >nul
+)
+if exist "%DIST_DIR%\ffprobe.exe" (
+  if not exist "%TMP_TOOLS%" mkdir "%TMP_TOOLS%"
+  copy /Y "%DIST_DIR%\ffprobe.exe" "%TMP_TOOLS%\ffprobe.exe" >nul
+)
 pyinstaller --noconfirm --clean videostudio.spec
 if errorlevel 1 (
   echo 打包失败，请把上面的报错发给开发者。
   pause
   exit /b 1
 )
+if exist "%TMP_TOOLS%\ffmpeg.exe" copy /Y "%TMP_TOOLS%\ffmpeg.exe" "%DIST_DIR%\ffmpeg.exe" >nul
+if exist "%TMP_TOOLS%\ffprobe.exe" copy /Y "%TMP_TOOLS%\ffprobe.exe" "%DIST_DIR%\ffprobe.exe" >nul
 echo.
 echo ============================================
 echo   打包完成！程序在： dist\AutoVideoStudio\AutoVideoStudio.exe
