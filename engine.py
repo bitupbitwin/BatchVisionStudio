@@ -471,7 +471,8 @@ class StoryEngine:
             "- scenes：场景数组，每个为 {location, beats}。\n"
             "- beats：该场景的节拍数组，每个为 {speaker, line, action, shot_prompt, duration}。\n"
             "  speaker=说话角色名（旁白用『旁白』）；line=台词；action=该角色动作/表情；"
-            "  shot_prompt=画面提示词(景别+画面)；duration=该镜秒数(建议 2-8)。\n"
+            "  shot_prompt=无字画面提示词(景别+画面+动作+情绪)，不得复制 line，"
+            "不得要求字幕、标题、对话框或任何画面文字；duration=该镜秒数(建议 2-8)。\n"
             f"- 角色请尽量使用既定角色：{cast_names}，保持人物言行一致。\n"
             "- 多用人物对白推进剧情，少用纯旁白。\n\n"
             f"故事设定:\n{json.dumps(story, ensure_ascii=False)}\n\n原文:\n{src[:16000]}"
@@ -551,7 +552,10 @@ class StoryEngine:
         for loc, b in flat:
             parts = [p for p in (loc, b.get("action", ""), b.get("shot_prompt", "")) if p]
             speaker = b.get("speaker", "旁白")
-            speak_hint = f"{speaker}正在说话" if speaker and speaker != "旁白" and b.get("line") else ""
+            speak_hint = (
+                f"{speaker}自然说话，只表现口型、动作和情绪，不在画面中显示台词"
+                if speaker and speaker != "旁白" and b.get("line") else ""
+            )
             visual = "；".join([*parts, speak_hint]) if speak_hint else "；".join(parts)
             shots.append({
                 "duration": b.get("duration") or default_dur,

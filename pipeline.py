@@ -291,12 +291,14 @@ class VideoProducer:
             f"角色定妆参考图。角色：{c.get('name', '')}。外貌穿着：{c.get('appearance', '')}。"
             f"身份性格：{c.get('persona', '')}。整体画风：{story.get('style', '')}。"
             "要求：单人、五官清晰、半身或全身、中性背景，作为该角色在全剧所有镜头中的外貌基准，需可复用。"
+            "无字幕、无文字、无字母、无数字、无 Logo、无水印、无 UI。"
         )
 
     def _scene_prompt(self, loc: dict, story: dict) -> str:
         return (
             f"场景参考图。地点：{loc.get('name', '')}。描述：{loc.get('description', '')}。"
             f"整体画风：{story.get('style', '')}。要求：空镜无人物，作为该场景的视觉基准。"
+            "避免带可读文字的招牌、屏幕或文件；无字幕、无标题、无 Logo、无水印、无 UI。"
         )
 
     def _reference_prompt(self, story: dict) -> str:
@@ -304,12 +306,16 @@ class VideoProducer:
             f"为短视频系列绘制统一的角色与场景基准画面。标题：{story.get('title', '')}。"
             f"主要人物/要素：{story.get('characters', '')}。整体风格：{story.get('style', '')}。"
             "要求主体清晰、画风统一，作为后续所有镜头的视觉基准。"
+            "标题只用于理解主题，不要把标题画进图中；无字幕、无文字、无 Logo、无水印、无 UI。"
         )
 
     def _consistency_prefix(self, story: dict) -> str:
         return (
             f"统一画风：{story.get('style', '')}。固定角色与场景设定：{story.get('characters', '')}。"
             "请在所有镜头中保持人物外貌、服装、场景与画风的一致与连贯。"
+            "输出无字干净母片；角色说话时只表现自然口型、动作和情绪，不显示或拼写台词。"
+            "无字幕、无标题、无说明文字、无对话气泡、无聊天框、无可读屏幕文字、"
+            "无 Logo、无水印、无 UI、无边框。字幕将由独立 SRT 在后期统一叠加。"
         )
 
     # ---------- ffmpeg 封装 ----------
